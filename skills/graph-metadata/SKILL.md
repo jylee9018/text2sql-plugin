@@ -1,6 +1,6 @@
 ---
 name: graph-metadata
-description: 원격 Graph MCP에서 활성 시맨틱 모델의 메타데이터를 조회한다. 지표의 물리 컬럼 계보, 컬럼 변경 영향, 데이터셋의 원천 테이블, 조인 규칙과 승인 상태, 온톨로지 개념 매핑을 묻는 요청에 사용한다. 실제 데이터 행이나 지표 값은 조회하지 않는다.
+description: 원격 Graph MCP에서 활성 시맨틱 모델의 메타데이터를 조회한다. 지표의 물리 컬럼 계보, 컬럼 변경 영향, 데이터셋의 원천 테이블, 조인 규칙과 승인 상태를 묻는 요청에 사용한다. 실제 데이터 행이나 지표 값은 조회하지 않는다.
 argument-hint: <메타데이터 질문>
 ---
 
@@ -21,15 +21,14 @@ argument-hint: <메타데이터 질문>
 | 지표의 필드와 물리 컬럼 계보 보기 | `graph_get_metric_lineage(dataset, metric, model?)` |
 | 물리 컬럼 변경의 지표 영향 보기 | `graph_get_column_impact(source_id, catalog, schema, table, column, model?)` |
 | 정의된 조인 규칙 보기 | `graph_list_join_rules(dataset?, model?)` |
-| 온톨로지 개념에 연결된 필드 보기 | `graph_get_concept_mapping(concept, model?)` |
 
-지표는 `dataset`과 `metric`을 함께 식별한다. 이름이 모호하면 `graph_search_definitions`로 후보를 찾은 뒤 정확한 값을 넘긴다. 물리 컬럼은 `source_id`, `catalog`, `schema`, `table`, `column` 전체 키로 식별한다. 계보·데이터셋 조회 결과에서 이 키를 가져오고 없는 부분을 추측해 채우지 않는다. 사용자가 불완전한 컬럼 이름만 줬는데 키를 확인할 수 없으면 필요한 식별자를 묻는다.
+`graph_search_definitions`의 종류는 Dataset·Field·Metric만 허용한다. 온톨로지 개념 매핑은 현재 그래프에 없다. 지표는 `dataset`과 `metric`을 함께 식별한다. 이름이 모호하면 `graph_search_definitions`로 후보를 찾은 뒤 정확한 값을 넘긴다. 물리 컬럼은 `source_id`, `catalog`, `schema`, `table`, `column` 전체 키로 식별한다. 계보·데이터셋 조회 결과에서 이 키를 가져오고 없는 부분을 추측해 채우지 않는다. SQL 소스 데이터셋의 `tables_basis=field_lineage`는 필드 계보에 드러난 테이블만 뜻한다. 사용자가 불완전한 컬럼 이름만 줬는데 키를 확인할 수 없으면 필요한 식별자를 묻는다.
 
 ## 결과 해석
 
-- `value_columns`는 지표가 참조하는 필드의 물리 값 출처다. 빈 배열이면 그 필드의 물리 계보가 확인되지 않았다고 말한다.
-- `row_set_candidates`와 영향 유형 `row_set_candidate`는 SQL 데이터셋의 조인·필터 등이 행 집합에 영향을 줄 수 있다는 뜻이다. 지표 값의 직접 출처나 영향 확정으로 표현하지 않는다.
-- 조인 규칙의 `status`, `declared_n_to_1`, `data_verified`를 구분한다. 선언된 N:1 관계가 실제 데이터 검증을 뜻하지 않는다. 초안 상태도 그대로 알린다.
+- `value_columns`는 `measure`·`condition` 역할 필드의 물리 값 출처다. `join` 역할 필드는 `row_set_candidates`에서 확인한다. 값 역할 필드의 배열이 비어 있으면 물리 계보가 확인되지 않았다고 말한다.
+- `row_set_candidates`와 영향 유형 `row_set_candidate`는 게시된 지표 계보에서 `role=join`인 컬럼의 영향 후보다. 지표 값의 직접 출처나 영향 확정으로 표현하지 않는다.
+- 조인 규칙의 `status`와 `n_to_1`을 구분한다. `n_to_1`은 선언된 대상 키와의 일치이며 실제 데이터의 유일성 검증이 아니다. 초안 상태도 그대로 알린다.
 - 응답에 나온 활성 모델과 `version_id`를 함께 밝힌다. 그래프에 없는 경로나 승인 상태를 추정하지 않는다. 그래프 조회 결과만으로 SQL 실행 가능 여부를 판정하지 않는다.
 
 숫자 집계·실제 행·필드 값 분포는 `ask` 또는 `explore-schema`의 `t2s` 절차를 사용한다. Graph MCP에는 임의 Cypher 실행 도구가 없다.
