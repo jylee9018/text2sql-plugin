@@ -59,7 +59,7 @@ uv pip install --python '/path/from/setup/bin/python' 'psycopg[binary]'
 
 ## 질문과 스킬
 
-Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$ask 월별 매출 보여줘`처럼 요청합니다. 첫 질문에서 사용할 DB와 정의 파일을 확인합니다.
+Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$ask 월별 매출 보여줘`처럼 요청합니다. `ask`는 먼저 Graph MCP에서 게시된 지표와 승인 상태를 찾습니다. 승인 전 지표라면 계산을 멈추고 그 상태를 알립니다. 승인된 지표의 실제 값을 계산할 때는 원본 DB 접속과 현재 `t2s` 엔진이 읽을 수 있는 정의 파일이 필요합니다. Graph MCP는 아직 전체 정의를 `t2s`에 전달하거나 실제 값을 실행하는 도구를 제공하지 않습니다.
 
 | 스킬 | 역할 |
 |---|---|
