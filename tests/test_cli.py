@@ -1,4 +1,4 @@
-"""t2s 명령이 환경변수의 DB·정의로 JSON 을 내는지."""
+"""t2s 명령이 DB와 Graph MCP의 활성 정의로 JSON을 내는지."""
 import json
 import sqlite3
 
@@ -16,7 +16,9 @@ def env(tmp_path, monkeypatch):
     con.executescript("CREATE TABLE payments_pii (card_no TEXT);")
     con.close()
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'demo.sqlite'}")
-    monkeypatch.setenv("SEMANTIC_MODEL", str(MODEL))
+    monkeypatch.setattr(cli, "fetch_model", lambda model=None: {
+        "version_id": "published-v1", "definition": yaml.safe_load(MODEL.read_text(encoding="utf-8"))
+    })
     return monkeypatch
 
 
@@ -30,13 +32,13 @@ def t2s(capsys, *argv, code=None):
     return json.loads(capsys.readouterr().out)
 
 
-def test_draft_preview_and_bad_definition(env, capsys):
-    """승인 전 지표는 --allow-draft 미리 보기로만 실행되고 표시가 붙는다. 정의 파일을 못 읽어도 JSON 오류 하나다."""
+def test_draft_preview_and_local_definition_ignored(env, capsys):
+    """승인 전 지표는 미리 보기로만 실행되고 로컬 정의 경로는 조회에 영향을 주지 않는다."""
     assert t2s(capsys, "compile", "avg_delivery_days", "--run", code=1)["error"]["code"] == "metric_not_approved"
     out = t2s(capsys, "compile", "avg_delivery_days", "--allow-draft", "--run")
     assert out["preview"] is True and out["result"]["rows"] == [[7.5]] and any(w["kind"] == "preview" for w in out["warnings"])
     env.setenv("SEMANTIC_MODEL", "nope.yaml")
-    assert t2s(capsys, "run", "SELECT 1", code=1)["error"]["kind"] == "bad_definition"
+    assert t2s(capsys, "context")["definition"]["version_id"] == "published-v1"
 
 
 def test_setup_errors(env, capsys):
@@ -66,9 +68,8 @@ def test_validate(env, capsys):
     ]:
         out = t2s(capsys, "validate", sql)
         assert not out["ok"] and out["problems"][0]["kind"] == kind, sql
-    env.delenv("SEMANTIC_MODEL")
-    gold = yaml.safe_load(GOLDEN.read_text(encoding="utf-8"))[0]["sql"]
-    assert t2s(capsys, "validate", gold)["ok"]  # 정의가 없으면 집계도 받는다
+    env.setenv("SEMANTIC_MODEL", "nope.yaml")
+    assert not t2s(capsys, "validate", "SELECT SUM(price) FROM order_items")["ok"]
 
 
 def test_run(env, capsys):
@@ -132,25 +133,24 @@ def test_values(env, capsys, tmp_path):
     field = next(f for d in doc["datasets"] if d["name"] == "customers" for f in d["fields"] if f["name"] == "customer_state")
     set_ext(field, sensitivity="pii")
     (tmp_path / "pii.yaml").write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
-    env.setenv("SEMANTIC_MODEL", str(tmp_path / "pii.yaml"))
+    env.setattr(cli, "fetch_model", lambda model=None: {"version_id": "published-v2", "definition": doc})
     err = t2s(capsys, "values", "customers.customer_state", code=1)["error"]
     assert err["kind"] == "policy" and "SP" not in json.dumps(err)
 
-    env.delenv("SEMANTIC_MODEL")  # 정의가 없으면 table.column, 타입으로 시간형을 안다
-    assert t2s(capsys, "values", "payments_pii.card_no")["values"] == []
+    assert t2s(capsys, "values", "payments_pii.card_no", code=1)["error"]["kind"] == "unknown_table"
     assert t2s(capsys, "values", "orders.order_purchase_timestamp")["kind"] == "time"
     assert t2s(capsys, "values", "orders.nope", code=1)["error"]["kind"] == "unknown_column"
 
 
 def test_check(env, capsys, tmp_path):
-    out = t2s(capsys, "check")
+    out = t2s(capsys, "check", str(MODEL))
     assert out["ok"] and out["mode"] == "db" and out["definition"]["name"] == "olist_sales" and out["problems"] == []
     assert "revenue (approved): 200.0" in out["samples"]
     assert out["uncovered"] == {"tables": ["payments_pii"], "columns": {}}
     con = sqlite3.connect(tmp_path / "demo.sqlite")
     con.executescript("ALTER TABLE orders ADD COLUMN memo TEXT;")
     con.close()
-    assert t2s(capsys, "check")["uncovered"]["columns"] == {"orders": ["memo"]}
+    assert t2s(capsys, "check", str(MODEL))["uncovered"]["columns"] == {"orders": ["memo"]}
 
     env.delenv("DATABASE_URL")  # --static 은 DB 가 필요 없다
     doc = yaml.safe_load(MODEL.read_text(encoding="utf-8"))
@@ -160,7 +160,7 @@ def test_check(env, capsys, tmp_path):
     out = t2s(capsys, "check", str(bad), "--static")
     assert not out["ok"] and out["mode"] == "static" and "없는 필드 nope" in out["problems"][0] and out["definition"]["path"] == str(bad)
     assert t2s(capsys, "check", str(tmp_path / "none.yaml"), "--static", code=1)["error"]["kind"] == "bad_definition"
-    assert t2s(capsys, "check", code=1)["error"]["kind"] == "no_database"
+    assert t2s(capsys, "check", code=1)["error"]["kind"] == "no_definition"
 
 
 def test_warnings(env, capsys, tmp_path):
@@ -175,14 +175,8 @@ def test_warnings(env, capsys, tmp_path):
     assert [w["kind"] for w in out["warnings"]] == ["date_literal"]
     assert t2s(capsys, "compile", "revenue")["warnings"] == []
 
-    # 정의가 없으면 DB 의 FK 로 1:N 조인을 안다
-    con = sqlite3.connect(tmp_path / "fk.sqlite")
-    con.executescript("CREATE TABLE a (id TEXT PRIMARY KEY, v REAL); CREATE TABLE b (id TEXT, a_id TEXT REFERENCES a(id));")
-    con.close()
-    env.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'fk.sqlite'}")
-    env.delenv("SEMANTIC_MODEL")
-    out = t2s(capsys, "validate", "SELECT SUM(a.v) FROM b JOIN a ON b.a_id = a.id")
-    assert [w["kind"] for w in out["warnings"]] == ["fan_out"]
+    env.setenv("SEMANTIC_MODEL", "nope.yaml")
+    assert t2s(capsys, "context")["definition"]["source"] == "graph_mcp"
 
 
 def test_usage_log(env, capsys, tmp_path):
@@ -230,14 +224,10 @@ def test_sql_rejects_physical_table_and_reports_execution_error(env, capsys):
     assert out["ok"] is False and out["error"]["kind"] == "missing_object"
 
 
-def test_context_concepts(env, capsys, tmp_path):
-    """4층: 정의 파일을 가리키는 매핑이 옆에 있으면 context 에 개념 → 필드 요약을 싣는다. 없으면 None."""
-    assert t2s(capsys, "context")["concepts"] is None
-    (tmp_path / "m.ossie.yaml").write_text(MODEL.read_text(encoding="utf-8"), encoding="utf-8")
-    (tmp_path / "m.ontology.yaml").write_text("ontology:\n- concept: Customer\n  description: 실제 고객\n", encoding="utf-8")
-    (tmp_path / "m.mapping.yaml").write_text(
-        "ontology_ref: {iri: ./m.ontology.yaml}\nsemantic_model_ref: {iri: ./m.ossie.yaml}\nconcept_mappings:\n"
-        "- concept: Customer\n  object_mappings:\n  - referent_mappings:\n    - {relationship: unique_id, expression: customers.customer_unique_id}\n",
-        encoding="utf-8")
-    env.setenv("SEMANTIC_MODEL", str(tmp_path / "m.ossie.yaml"))
-    assert "- Customer: 실제 고객 / unique_id = customers.customer_unique_id" in t2s(capsys, "context")["concepts"]
+def test_context_uses_graph_version(env, capsys):
+    env.setenv("SEMANTIC_MODEL", "nope.yaml")
+    out = t2s(capsys, "context")
+    assert out["definition"]["version_id"] == "published-v1"
+    assert out["definition"]["source"] == "graph_mcp"
+    env.setenv("GRAPH_VERSION_ID", "other-version")
+    assert t2s(capsys, "context", code=1)["error"]["kind"] == "graph_unavailable"
