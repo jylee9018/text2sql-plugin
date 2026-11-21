@@ -70,7 +70,7 @@ Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$a
 | `diagnose` | 오류나 잘못된 답의 원인을 분류합니다 |
 | `define-metric` | 새 지표를 draft로 정의하고 검사합니다 |
 | `semantic-sync` | 정의 파일과 실제 DB를 대조하고 누락 범위를 보고합니다 |
-| `graph-metadata` | 게시된 정의의 계보·영향도·조인·개념 매핑을 Graph MCP에서 찾습니다 |
+| `graph-metadata` | 게시된 정의의 계보·영향도·조인을 Graph MCP에서 찾습니다 |
 
 ## `t2s` 명령
 
