@@ -48,11 +48,11 @@ uv pip install --python '/path/from/setup/bin/python' 'psycopg[binary]'
 
 ## Graph MCP 연결
 
-플러그인에는 [text2sql-graph-mcp](https://text2sql-graph-mcp-production.up.railway.app/mcp)가 포함됩니다. 이 서버는 Neo4j에 게시된 **메타데이터**만 읽습니다. 지표 값이나 원본 DB의 행을 조회하지 않으므로 `t2s`의 `DATABASE_URL` 설정과 별개입니다.
+플러그인의 `mcp.json`은 [text2sql-graph-mcp](https://text2sql-graph-mcp-production.up.railway.app/mcp) 원격 서버의 연결 정보입니다. 서버 자체는 Railway에서 실행됩니다. 이 서버는 Neo4j에 게시된 **메타데이터**만 읽습니다. 지표 값이나 원본 DB의 행을 조회하지 않으므로 `t2s`의 `DATABASE_URL` 설정과 별개입니다.
 
 서버는 Railway 서비스의 `MCP_API_TOKEN`을 Bearer 토큰으로 요구합니다. 비밀번호나 토큰을 이 저장소와 대화에 넣지 마세요.
 
-- **Codex**: `mcp.json`에 원격 서버와 Bearer 인증 방식을 선언했습니다. 플러그인의 MCP 연결 설정에서 Railway `MCP_API_TOKEN`을 API 키로 입력합니다. Codex CLI에서 별도로 연결할 때는 `TEXT2SQL_MCP_TOKEN` 환경변수를 설정한 뒤 `codex mcp add text2sql-graph --url https://text2sql-graph-mcp-production.up.railway.app/mcp --bearer-token-env-var TEXT2SQL_MCP_TOKEN`을 실행합니다. CLI를 실행할 때도 환경변수가 있어야 합니다.
+- **Codex**: `mcp.json`에 원격 서버와 Bearer 인증 방식을 선언했습니다. 플러그인을 갱신한 뒤 `codex plugin add text2sql@text2sql-plugin`으로 설치 캐시를 새로고침하고 데스크톱 앱을 다시 시작해 새 채팅에서 확인합니다. 플러그인의 MCP 연결 설정에서 Railway `MCP_API_TOKEN`을 API 키로 입력해야 도구를 호출할 수 있습니다. `codex mcp list`에 표시되는 전역 MCP 등록과 플러그인에 포함된 서버 설정은 별개입니다. CLI에서 전역 MCP로 별도 등록하려면 `TEXT2SQL_MCP_TOKEN` 환경변수를 설정한 뒤 `codex mcp add text2sql-graph --url https://text2sql-graph-mcp-production.up.railway.app/mcp --bearer-token-env-var TEXT2SQL_MCP_TOKEN`을 실행합니다. CLI를 실행할 때도 환경변수가 있어야 합니다.
 - **Claude Code**: 플러그인을 설치하거나 업데이트한 뒤 `graph_mcp_token` 설정에 Railway `MCP_API_TOKEN`을 입력합니다. 입력값은 Claude Code의 보안 저장소에 보관되며 `.mcp.json`의 인증 헤더에 사용됩니다. `/mcp`에서 `text2sql-graph` 연결 상태를 확인합니다.
 
 연결 후 `graph_list_models`가 활성 모델을 반환하는지 확인합니다. 예를 들어 `$graph-metadata order_lines.revenue 지표의 물리 컬럼 계보 보여줘`처럼 요청합니다. 그래프의 활성 정의 버전과 로컬 `SEMANTIC_MODEL`이 다를 수 있으므로 두 결과를 함께 해석할 때 버전을 확인합니다. [Codex 플러그인 인증 설정](https://developers.openai.com/plugins/build/plugins), [Claude Code 플러그인 MCP 설정](https://code.claude.com/docs/en/mcp)을 참고할 수 있습니다.
