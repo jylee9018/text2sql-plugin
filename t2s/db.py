@@ -8,14 +8,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 
+import sqlglot
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 # SQLAlchemy 방언 이름과 sqlglot 방언 이름이 다른 경우만 적는다.
 _SQLGLOT_NAME = {"postgresql": "postgres", "mssql": "tsql", "mariadb": "mysql"}
 # 접속 자체를 읽기 전용으로 거는 방언. ponytail: MySQL 은 SET SESSION TRANSACTION READ ONLY, 다른 DB 는 계정 권한에 의존. 대상 DB 가 생기면 추가
 _READONLY_BACKENDS = {"sqlite", "postgresql"}
+# 다른 표의 행마다 큰 표를 처음부터 다시 읽는 횟수가 이만큼이면 실행 전에 알린다. 올리스트 SQLite 실측: 3억 번에 17초, 800만 번에 0.4초
+REPEATED_READS = 1e8
 # 원본 컬럼 타입 문자열 → Ossie 자료형. 위에서부터 먼저 맞는 것
 _FAMILIES = [
     (r"TIMESTAMP.*TIME ZONE|TIMESTAMPTZ|TIMESTAMP_TZ", "DateTimeTz"),
@@ -139,6 +144,30 @@ class Database:
             "truncated": len(rows) > self.max_rows,
         }
 
+    def slow_parts(self, sql: str) -> list[dict]:
+        """실행하지 않고 실행 계획만 본다. 다른 표의 행마다 큰 표를 처음부터 다시 읽는 곳(반복 읽기 REPEATED_READS 이상)을 돌려준다.
+        [{"table", "times": 다시 읽는 횟수, "rows": 한 번에 읽는 행 수}]. 계획을 읽지 못하면 빈 목록이다(실행을 막을 근거가 없다).
+        ponytail: SQLite 만 본다. PostgreSQL 은 해시 조인을 쓰므로 상관 하위 쿼리만 남는다. 대상이 생기면 EXPLAIN (FORMAT JSON) 으로 붙인다"""
+        if self.dialect != "sqlite":
+            return []
+        try:
+            with self.engine.connect() as conn, self._time_limit(conn):
+                plan = conn.execute(text("EXPLAIN QUERY PLAN " + sql)).fetchall()
+
+                def count(t: exp.Table) -> float | None:
+                    try:
+                        return conn.execute(text(exp.select("MAX(rowid)").from_(t.copy()).sql("sqlite"))).scalar()
+                    except SQLAlchemyError:  # 뷰·WITHOUT ROWID 표는 rowid 가 없다
+                        return None
+
+                tree = sqlglot.parse_one(sql, read="sqlite")
+                size = _sizes(tree, count)
+        except (SQLAlchemyError, SqlglotError):
+            return []
+        real = {t.alias_or_name.lower(): t.name for t in tree.find_all(exp.Table)}  # 계획에는 별칭이 나온다
+        found = _repeats(plan, size, _streams(tree))
+        return [{**f, "table": real.get(f["table"].lower(), f["table"])} for f in found]
+
     @contextmanager
     def _time_limit(self, conn):
         """실행 시간 제한. 넘으면 DB 오류(취소)로 끝난다."""
@@ -170,3 +199,94 @@ class Database:
             return fn() or default
         except NotImplementedError:
             return default
+
+
+def _streams(tree: exp.Expression) -> bool:
+    """맨 바깥이 LIMIT 만 있고 정렬·묶음·집계가 없으면 앞 행을 찾는 대로 멈춘다. 그 반복은 몇 번 돌지 모른다(조회 질문은 거의 다 이렇다)."""
+    return (isinstance(tree, exp.Select) and bool(tree.args.get("limit")) and not any(tree.args.get(k) for k in ("order", "group", "distinct", "having"))
+            and not any(a.find_ancestor(exp.Select) is tree for a in tree.find_all(exp.AggFunc, exp.Window)))
+
+
+def _sizes(tree: exp.Expression, count):
+    """실행 계획에 나오는 이름(표·별칭·CTE·하위 쿼리 별칭) → 행 수. 모르면 None 이다. 표는 count(표) 로 센다.
+    CTE·하위 쿼리는 묶음 없는 집계면 1행, LIMIT 이 있으면 그 수 이하, 조건·조인·묶음 없이 한 표를 그대로 옮기면 그 표의 행 수다.
+    그 밖(조건·묶음·DISTINCT 가 있는 것)은 모른다. 묶음 결과는 몇 행일지 몰라 크게 잡으면 빠른 SQL 도 막는다(평가셋 bcds-001·hard-003)."""
+    ctes = {c.alias: c.this for c in tree.find_all(exp.CTE)}
+    base = {}
+    for t in tree.find_all(exp.Table):
+        if t.name not in ctes and t.name not in base:
+            base[t.name] = count(t)
+    memo: dict[str, float | None] = {}
+
+    def rows(q: exp.Expression) -> float | None:
+        if not isinstance(q, exp.Select):
+            return None
+        if not q.args.get("group") and any(a.find_ancestor(exp.Select) is q and not a.find_ancestor(exp.Window) for a in q.find_all(exp.AggFunc)):
+            return 1
+        n, src = None, q.args.get("from_")
+        if src and not any(q.args.get(k) for k in ("where", "group", "having", "distinct", "joins", "laterals")):
+            n = table(src.this) if isinstance(src.this, exp.Table) else rows(src.this.this) if isinstance(src.this, exp.Subquery) else None
+        limit = q.args.get("limit")
+        cap = limit.expression if isinstance(limit, exp.Limit) else None
+        if isinstance(cap, exp.Literal) and cap.is_int:
+            return min(int(cap.name), n) if n is not None else int(cap.name)
+        return n
+
+    def table(t: exp.Table) -> float | None:
+        if t.name in ctes:
+            if t.name not in memo:
+                memo[t.name] = None  # 재귀 CTE 는 모른다
+                memo[t.name] = rows(ctes[t.name])
+            return memo[t.name]
+        return base.get(t.name)
+
+    seen: dict[str, set] = {}
+    for t in tree.find_all(exp.Table):
+        seen.setdefault(t.alias_or_name.lower(), set()).add(table(t))
+    for sub in tree.find_all(exp.Subquery):
+        if sub.alias:
+            seen.setdefault(sub.alias.lower(), set()).add(rows(sub.this))
+    names = {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}  # 같은 별칭이 다른 크기의 표를 가리키면 모른다
+    return lambda name: names.get(name.lower())
+
+
+def _plain(detail: str) -> str:
+    """SQLite 3.36 이전 표기(SCAN TABLE orders AS o, SEARCH TABLE x ..., SCAN SUBQUERY 2 AS x, EXECUTE ...)를 지금 표기(SCAN o)로 맞춘다."""
+    d = re.sub(r"^EXECUTE ", "", detail)
+    d = re.sub(r"^(SCAN|SEARCH) TABLE \S+ AS (\S+)", r"\1 \2", d)
+    d = re.sub(r"^(SCAN|SEARCH) (?:TABLE |SUBQUERY \d+ AS )", r"\1 ", d)
+    return d
+
+
+def _repeats(plan: list, size, lazy: bool = False) -> list[dict]:
+    """SQLite EXPLAIN QUERY PLAN 행 (id, parent, _, detail) 에서 반복 읽기를 찾는다. 같은 부모 아래 SCAN·SEARCH 는 앞에서부터 바깥 → 안쪽
+    반복이다. 안쪽 SCAN 은 바깥 반복의 행마다 표 전체를 읽는다(SEARCH 는 색인으로 몇 행만 읽는다고 본다). 상관 하위 쿼리는 바깥 행마다 돈다.
+    상관이 없는 하위 쿼리는 한 번만 돈다. 바깥 표의 WHERE 로 줄어드는 행은 모르므로 표 전체 행으로 본다(--force 로 그대로 돌린다).
+    lazy 면 맨 바깥 반복은 LIMIT 을 채우면 멈추므로 알리지 않는다. MATERIALIZE 와 상관없는 하위 쿼리는 그래도 끝까지 돈다."""
+    kids: dict[int, list] = {}
+    for i, parent, _, detail in plan:
+        kids.setdefault(parent, []).append((i, detail))
+    found = []
+
+    def walk(node: int, outer: float, lazy: bool) -> None:
+        times = outer
+        for i, d in kids.get(node, []):
+            d = _plain(d)
+            loop = re.match(r"(SCAN|SEARCH) (\S+)", d)
+            if loop and not d.startswith("SCAN CONSTANT ROW"):
+                n = size(loop[2]) if loop[1] == "SCAN" else 1
+                if loop[1] == "SCAN" and n is not None and not lazy and times > 1 and times * n >= REPEATED_READS:
+                    found.append({"table": loop[2], "times": int(times), "rows": int(n)})
+                walk(i, times, lazy)
+                times *= n or 1  # 크기를 모르는 반복은 곱하지 않는다. 확실할 때만 알린다
+            elif "CORRELATED" in d:
+                walk(i, times, lazy)
+            elif re.search(r"(SCALAR|LIST) SUBQUERY", d):
+                walk(i, 1, False)
+            elif d.startswith("MATERIALIZE"):  # 끝까지 만들어 둔다
+                walk(i, outer, False)
+            else:  # CO-ROUTINE·COMPOUND 등은 감싼 곳만큼, 감싼 곳처럼 돈다
+                walk(i, outer, lazy)
+
+    walk(0, 1, lazy)
+    return found

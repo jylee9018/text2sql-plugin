@@ -8,7 +8,7 @@
     {
       "name": "text2sql",
       "source": "./",
-      "description": "자연어 질문에 SQL로 답하는 Text-to-SQL 플러그인"
+      "description": "자연어 SQL 조회와 Graph 메타데이터 탐색을 제공하는 플러그인"
     }
   ]
 }

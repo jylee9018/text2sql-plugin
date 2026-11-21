@@ -206,3 +206,38 @@ def test_usage_log(env, capsys, tmp_path):
     assert ctx["cmd"] == "context" and ctx["ok"] and ctx["sql"] is None
     env.setenv("T2S_LOG", str(tmp_path / "no" / "dir" / "x.jsonl"))  # 쓰기 실패는 무시한다
     assert t2s(capsys, "run", sql)["ok"]
+
+
+
+def test_sql(env, capsys):
+    """2층 SQL: AGG 는 정의대로, 정의 밖 집계는 계산하되 notes 에 적는다."""
+    out = t2s(capsys, "sql", "SELECT c.customer_state, AGG(o.order_count) AS n FROM orders AS o JOIN customers AS c ON o.customer_id = c.customer_id GROUP BY 1 ORDER BY 1")
+    assert out["result"]["rows"] == [["RJ", 1], ["SP", 2]] and out["notes"] == []
+    out = t2s(capsys, "sql", "SELECT SUM(i.price) AS s FROM order_items AS i")
+    assert out["undefined"] == ["SUM(i.price)"] and "정의 안 된 계산" in out["notes"][0]
+    assert t2s(capsys, "sql", "SELECT AGG(o.avg_delivery_days) FROM orders AS o", code=1)["error"]["code"] == "metric_not_approved"
+
+
+def test_sql_rejects_physical_table_and_reports_execution_error(env, capsys):
+    """2층 SQL 은 데이터셋만 읽고 실행 오류를 다른 명령과 같은 위치에 돌려준다."""
+    err = t2s(capsys, "sql", "SELECT order_id FROM main.orders", code=1)["error"]
+    assert err["code"] == "unknown_relation"
+    with sqlite3.connect(cli.os.environ["DATABASE_URL"].removeprefix("sqlite:///")) as con:
+        con.execute("ALTER TABLE orders ADD COLUMN internal_secret TEXT DEFAULT 'hidden'")
+    out = t2s(capsys, "sql", "SELECT internal_secret FROM ORDERS", code=1)
+    assert out["ok"] is False and out["error"]["kind"] == "missing_object"
+    out = t2s(capsys, "sql", "SELECT SUM(nope) FROM orders", code=1)
+    assert out["ok"] is False and out["error"]["kind"] == "missing_object"
+
+
+def test_context_concepts(env, capsys, tmp_path):
+    """4층: 정의 파일을 가리키는 매핑이 옆에 있으면 context 에 개념 → 필드 요약을 싣는다. 없으면 None."""
+    assert t2s(capsys, "context")["concepts"] is None
+    (tmp_path / "m.ossie.yaml").write_text(MODEL.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "m.ontology.yaml").write_text("ontology:\n- concept: Customer\n  description: 실제 고객\n", encoding="utf-8")
+    (tmp_path / "m.mapping.yaml").write_text(
+        "ontology_ref: {iri: ./m.ontology.yaml}\nsemantic_model_ref: {iri: ./m.ossie.yaml}\nconcept_mappings:\n"
+        "- concept: Customer\n  object_mappings:\n  - referent_mappings:\n    - {relationship: unique_id, expression: customers.customer_unique_id}\n",
+        encoding="utf-8")
+    env.setenv("SEMANTIC_MODEL", str(tmp_path / "m.ossie.yaml"))
+    assert "- Customer: 실제 고객 / unique_id = customers.customer_unique_id" in t2s(capsys, "context")["concepts"]

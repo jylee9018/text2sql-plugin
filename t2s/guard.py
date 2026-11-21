@@ -11,6 +11,9 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import OptimizeError, SqlglotError
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import Scope, traverse_scope
+
+from .engine import source_table
 
 _FORBIDDEN = (
     exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Drop, exp.Create,
@@ -52,11 +55,14 @@ def policy(db, model=None, engine_sql: bool = False) -> dict:
         return {"allowed_tables": set(db.tables), "allow_aggregates": True, "columns": None, "edges": None}
     if engine_sql:
         return {"allowed_tables": model.tables(), "allow_aggregates": True, "columns": None, "edges": None}
-    table = {d: ds["source"].rpartition(".")[2].lower() for d, ds in model.datasets.items()}
+    # 조회문 source 데이터셋은 실제 테이블이 아니라 LLM 이 쓴 SQL 에서 이름으로 부를 수 없다. 컬럼·연결 허용 범위에서 뺀다
+    table = {d: t.rpartition(".")[2] for d, ds in model.datasets.items() if (t := source_table(ds))}
     columns: dict[str, set[str]] = {}
     for d, n in model.fields:
-        columns.setdefault(table[d], set()).add(n.lower())
-    edges = {table[f]: [{**r, "from": table[r["from"]], "to": table[r["to"]]} for r in rs] for f, rs in model.edges.items()}
+        if d in table:
+            columns.setdefault(table[d], set()).add(n.lower())
+    edges = {table[f]: [{**r, "from": table[r["from"]], "to": table[r["to"]]} for r in rs if r["to"] in table]
+             for f, rs in model.edges.items() if f in table}
     return {"allowed_tables": model.tables(), "allow_aggregates": False, "columns": columns, "edges": edges}
 
 
@@ -98,27 +104,58 @@ def _join_pairs(join: exp.Join, alias: dict[str, str]) -> list[tuple[str, str]]:
     return pairs
 
 
+def _origin(scope: Scope, source: str, column: str, depth: int = 0) -> str | None:
+    """scope 에서 source.column 이 가리키는 실제 '테이블.컬럼'(소문자). WITH·하위 쿼리는 그 안의 SELECT 로 거슬러 간다.
+
+    컬럼을 그대로(이름만 바꿔) 내보낸 것만 따라간다. 계산한 값·UNION·못 찾는 이름이면 None.
+    """
+    src = scope.sources.get(source)
+    if isinstance(src, exp.Table):
+        return f"{src.name.lower()}.{column.lower()}"
+    if not isinstance(src, Scope) or not isinstance(src.expression, exp.Select) or depth > 20:
+        return None
+    for proj in src.expression.selects:
+        if proj.alias_or_name.lower() == column.lower():
+            inner = proj.this if isinstance(proj, exp.Alias) else proj
+            if isinstance(inner, exp.Column) and inner.table:
+                return _origin(src, inner.table, inner.name, depth + 1)
+            return None
+    return None
+
+
 def _check_joins(tree: exp.Expression, edges: dict[str, list[dict]]) -> None:
     """qualify 를 거친 트리(USING 은 ON 으로 바뀌어 있다)에서 서로 다른 테이블 사이 조인이 정의의 연결과 맞는지 본다.
 
-    ponytail: JOIN ... ON 만 본다. FROM a, b WHERE a.x = b.y 와 CTE·하위 쿼리를 사이에 둔 조인은 거르지 않는다. 필요해지면 WHERE 의 등식도 모은다
+    WITH·하위 쿼리 결과를 잇는 조건도 원래 테이블 컬럼으로 거슬러 본다. 원래 컬럼을 못 찾는 키(계산한 값 등)는 승인된 연결일 수 없어 거절한다.
+    ponytail: JOIN ... ON 의 컬럼 = 컬럼만 본다. FROM a, b WHERE a.x = b.y 는 거르지 않는다. 필요해지면 WHERE 의 등식도 모은다
     """
     allowed = {
         frozenset(frozenset({f"{r['from']}.{a}".lower(), f"{r['to']}.{b}".lower()}) for a, b in zip(r["from_columns"], r["to_columns"]))
         for rs in edges.values() for r in rs
     }
-    alias = _aliases(tree)
-    for j in tree.find_all(exp.Join):
-        groups: dict[frozenset, set] = {}
-        for left, right in _join_pairs(j, alias):
-            tables = frozenset({left.split(".")[0], right.split(".")[0]})
-            if len(tables) == 2 and tables <= set(alias.values()):
-                groups.setdefault(tables, set()).add(frozenset({left, right}))
-        for cond in groups.values():
-            if frozenset(cond) not in allowed:
-                got = ", ".join(" = ".join(sorted(p)) for p in cond)
-                ok = ", ".join(sorted(", ".join(" = ".join(sorted(p)) for p in e) for e in allowed))
-                raise UnsafeSQL(f"승인되지 않은 연결: {got} (허용: {ok})", kind="unknown_join")
+    for scope in traverse_scope(tree):
+        for j in scope.expression.args.get("joins") or []:
+            on = j.args.get("on")
+            if on is None or on.find(exp.Or):
+                raise UnsafeSQL("조인은 승인된 키 컬럼의 등식 조건으로 잇는다", kind="unknown_join")
+            groups: dict[frozenset, set] = {}
+            for eq in on.find_all(exp.EQ) if on is not None else []:
+                if not (isinstance(eq.left, exp.Column) and isinstance(eq.right, exp.Column)):
+                    continue
+                ends = [_origin(scope, c.table, c.name) if c.table else None for c in (eq.left, eq.right)]
+                if None in ends:
+                    raise UnsafeSQL(f"연결 키가 어느 테이블의 컬럼인지 거슬러 찾지 못함: {eq.sql()}. 승인된 연결의 키 컬럼을 그대로 써서 잇는다",
+                                    kind="unknown_join")
+                tables = frozenset(e.split(".")[0] for e in ends)
+                if len(tables) == 2:
+                    groups.setdefault(tables, set()).add(frozenset(ends))
+            if not groups:
+                raise UnsafeSQL("조인에 승인된 테이블 사이 키 등식이 없음", kind="unknown_join")
+            for cond in groups.values():  # 한 JOIN 의 같은 두 테이블 조건을 묶어 한 연결(복합 키 포함)과 대조한다
+                if frozenset(cond) not in allowed:
+                    got = ", ".join(" = ".join(sorted(p)) for p in cond)
+                    ok = ", ".join(sorted(", ".join(" = ".join(sorted(p)) for p in e) for e in allowed))
+                    raise UnsafeSQL(f"승인되지 않은 연결: {got} (허용: {ok})", kind="unknown_join")
 
 
 def prepare(

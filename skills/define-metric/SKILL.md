@@ -23,7 +23,7 @@ argument-hint: <만들 지표, 또는 그 지표로 답하고 싶은 질문>
 t2s context "<요청 원문>"
 ```
 
-`catalog` 의 지표 이름·동의어·설명과 요청을 대조한다. `catalog` 에는 approved 지표와 연결만 나오므로, draft 지표·draft 연결·모델 수준 결정 목록(모델 `custom_extensions` 의 TEXT2SQL `decisions`)은 정의 파일을 읽어서 함께 본다. 필요한 연결이 draft 로 이미 있으면 새로 만들지 말고 그 연결을 쓰되, 승인 전이라 이 지표도 승인 뒤에야 계산된다고 알린다.
+`catalog` 의 지표 이름·동의어·설명과 요청을 대조한다. `catalog` 에는 approved 지표와 연결만 나오므로, draft 지표·draft 연결·모델 수준 결정 목록(모델 `nonportable_extensions` 의 TEXT2SQL `data.decisions`. 옛 정의 파일은 `custom_extensions`)은 정의 파일을 읽어서 함께 본다. 필요한 연결이 draft 로 이미 있으면 새로 만들지 말고 그 연결을 쓰되, 승인 전이라 이 지표도 승인 뒤에야 계산된다고 알린다.
 
 - 같은 뜻의 approved 지표가 있으면 그 지표 이름을 알려 주고 끝낸다. 계산은 ask 스킬이 한다.
 - 같은 뜻의 draft 지표가 있으면 새로 만들지 않는다. draft 라 아직 계산되지 않고 승인이 필요하다고 알린다. 그 지표의 `instructions` 에 미정이라고 적힌 것이 있으면, 그것만 4단계 방식으로 물어 채운다.
@@ -54,6 +54,7 @@ t2s context "<요청 원문>"
 - 분모가 있으면, 분모의 대상과 필터가 분자와 같은 범위인가?
 - 같은 대상이 두 번 세지지 않는가?
 - 담당자가 아는 최근 값이 있나? (예: "지난달 대략 12%") 있으면 5단계에서 계산값과 대조한다.
+- 새 필드·데이터셋을 넣는다면, 그 필드는 어느 업무 개념의 무엇인가? (예: 고객의 주 → `State` 의 `code`) `t2s context` 의 `concepts` 에 있는 개념을 선택지로 두고 "새 개념"과 "잇지 않는다"도 둔다. `concepts` 가 없으면(정의 파일 옆에 매핑 파일이 없으면) 묻지 않는다.
 
 답에 따라 새로 생긴 질문은 다시 한 번에 묶는다. 사용자가 정하지 않은 규칙은 짐작해 채우지 않고, 미정으로 남겨 `instructions` 에 적는다.
 
@@ -63,22 +64,39 @@ t2s context "<요청 원문>"
 
 - 컬럼은 필드로 먼저 추가한다: `datasets[].fields[]` 에 `name`, `expression.sql`, `datatype`, `description`. 테이블이 없으면 데이터셋(`name`, `source`, `primary_key`, `description`, `fields`)부터 추가한다. 식·조건·연결에는 필드 이름만 쓴다.
 - `datatype` 은 String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz 중 하나다.
-- 한 데이터셋만 쓰는 지표는 그 데이터셋의 `metrics` 에 두고 식에 필드 이름만 쓴다. 여러 데이터셋을 쓰면 모델 `metrics` 에 두고 `dataset.field` 로 쓴다. 지표 식에 다른 지표 이름을 쓰지 않는다.
-- 빼야 할 행은 식 안의 `FILTER (WHERE ...)` 로 쓰고, 조건이 다른 데이터셋 필드면 `CASE WHEN` 으로 쓴다. 날짜 차이는 `DATEDIFF('day', 시작, 끝)` 처럼 단위에 따옴표를 붙인다.
-- 새 연결은 `from` 이 여러 행 쪽, `to` 가 한 행 쪽이고 `to_columns` 는 `to` 데이터셋의 기본키여야 한다. 상태는 `{"status": "draft"}` 로 적는다.
+- 지표는 데이터셋의 `metrics` 에 두고 식에 필드 이름만 쓴다. 지표 식에 다른 지표 이름을 쓰지 않는다.
+- 다른 데이터셋의 값이 필요하면(예: 주문 상태로 거르는 상품 매출) 계산용 데이터셋을 만들어 그 `metrics` 에 둔다. Ossie 2·3층은 집계 하나가 데이터셋 둘 이상을 읽는 모델 지표를 계산하지 않는다(정의 파일의 `order_lines` 가 예다).
+  - `source` 에 SELECT 문 하나를 적는다. 기준 표에 필요한 표를 `LEFT JOIN` 으로 N:1 로만 이어 행 수가 기준 표와 같게 한다. 이 정의의 다른 데이터셋이 이름으로 가리키는 테이블만 읽는다. 하위 쿼리·WITH·윈도 함수는 쓰지 않는다.
+  - `primary_key` 는 기준 표의 기본키다. 기준 표의 같은 행에 잇는 연결(기본키끼리) 하나를 둔다. 그러면 원래 표의 묶음 기준·조건을 그대로 쓴다.
+  - 붙인 필드의 `description` 에 "계산용 사본. 묶거나 거를 때는 <원래 dataset.field> 를 쓴다"를 적는다.
+- 모델 `metrics` 에는 데이터셋 지표끼리 계산한 뒤 합치는 지표만 둔다. 집계 하나가 데이터셋 하나만 읽게 쓴다(예: `SUM(orders.amount) / COUNT(DISTINCT customers.customer_id)`). 집계마다 따로 계산한 뒤 나눈다.
+- 빼야 할 행은 식 안의 `FILTER (WHERE ...)` 로 쓴다. 조건에 `AND`·`OR` 를 쓸 수 있다. 날짜 차이는 `DATEDIFF(day, 시작, 끝)` 처럼 단위를 따옴표 없이 쓴다(Ossie 0.3.0.dev0 식 언어).
+- 새 연결은 `from` 이 여러 행 쪽, `to` 가 한 행 쪽이고 `to_columns` 는 `to` 데이터셋의 기본키여야 한다. 상태는 연결의 확장 칸 `data` 에 `status: draft` 로 적는다.
 - 지표마다 `description`(한 문장), `ai_context.synonyms`, `ai_context.instructions`(누가 무슨 결정에 쓰는지, 보는 단위, 기간을 자를 날짜 필드, 남은 미정 사항), `ai_context.examples`(2번 단위로 묶은 질문 한두 개)를 적는다.
-- 지표의 `custom_extensions` 에 `vendor_name: TEXT2SQL` 항목 하나를 두고, `data` 는 JSON 문자열로 적는다.
+- 지표의 `nonportable_extensions` 에 `vendor_name: TEXT2SQL` 항목 하나를 두고, `data` 는 YAML 객체로 적는다(Ossie 0.3.0.dev0). JSON 문자열 `data` 와 옛 이름 `custom_extensions` 는 새로 쓰지 않는다. 날짜 값은 따옴표로 감싸 문자열로 적는다(날짜 객체는 Ossie 규격 오류).
 
 ```yaml
-custom_extensions:
+nonportable_extensions:
   - vendor_name: TEXT2SQL
-    data: '{"status": "draft", "decision": "<결정 id>", "discovery": [{"q": "한 건의 단위", "a": "주문. 상품이 여러 개여도 한 번 센다", "by": "<답한 사람의 역할>", "at": "<오늘 YYYY-MM-DD>"}], "expected": {"value": 0.12, "where": ["<dataset.field 조건>"], "source": "<출처>"}}'
+    data:
+      status: draft
+      decision: <결정 id>
+      discovery:
+        - q: 한 건의 단위
+          a: 주문. 상품이 여러 개여도 한 번 센다
+          by: <답한 사람의 역할>
+          at: '<오늘 YYYY-MM-DD>'
+      expected:
+        value: 0.12
+        where: ["<dataset.field 조건>"]
+        source: <출처>
 ```
 
 - `discovery` 에는 질문 키와 확정 답만 적는다. 대화 원문이나 사람 이름은 넣지 않고, 답한 사람은 역할로 적는다. `expected` 는 담당자가 아는 값이 있을 때만 적는다.
-- 새 결정이면 모델의 TEXT2SQL `data` 안 `decisions` 목록에 `{"id", "decider", "decision", "action", "grain", "baseline"}` 하나를 더한다. 같은 JSON 문자열에 있는 `revision` 같은 다른 키는 그대로 둔다.
-- 이 세션에서 정의 파일을 처음 고칠 때 모델의 `revision` 을 1 올린다.
-- 새 지표는 `"status": "draft"` 로만 만든다. 이미 있는 지표·연결의 `status` 는 고치지 않는다. 승인은 사람이 한다.
+- 새 결정이면 모델의 TEXT2SQL `data` 안 `decisions` 목록에 `{"id", "decider", "decision", "action", "grain", "baseline"}` 하나를 더한다. 같은 `data` 객체에 있는 `revision` 같은 다른 키는 그대로 둔다.
+- 정의 파일을 고칠 때마다(저장할 때마다) 모델의 `revision` 을 1 올린다. 규격 판 올리기처럼 지표 뜻이 그대로인 고침도 센다.
+- 3단계에서 고른 개념 연결은 정의 파일 옆 매핑 파일(`<주제>.mapping.yaml`)의 `concept_mappings` 에 적는다. 그 개념의 `object_mappings` 의 `referent_mappings`, 또는 `link_mappings` 의 `children` 에 `relationship` 과 `expression: <dataset.field>` 를 더한다. "새 개념"이면 온톨로지 파일(`<주제>.ontology.yaml`)에 `concept`·`description`·`type`·`relationships` 를 먼저 더한다. 계산용 데이터셋의 사본 필드는 잇지 않는다.
+- 새 지표는 `status: draft` 로만 만든다. 이미 있는 지표·연결의 `status` 는 고치지 않는다. 승인은 사람이 한다.
 - 카드번호, 계좌번호, 주민번호, 연락처 같은 민감 컬럼은 필드로 넣지 않는다.
 
 파일을 고치면 훅이 `t2s check --static` 결과를 알려 줄 수 있다(Claude Code, 또는 이 플러그인의 훅을 신뢰한 Codex). 훅 결과가 보이지 않으면 고친 뒤 `t2s check --static` 을 직접 부른다. 문제가 나오면 고친다.
@@ -89,7 +107,7 @@ custom_extensions:
 t2s check
 ```
 
-`problems` 가 있으면 고치고 다시 검사한다. `samples` 의 `<지표> (draft): <값>` 줄(전체 기간 값)을 보여 준다. `pending` 에 나온 지표는 승인 전 연결을 기다리는 지표다. 문제가 아니며, 값은 `samples` 에 `(draft, 미리 보기)` 로 나온다. 어느 연결이 승인돼야 답변에 쓰이는지 알린다. `notes` 에 담당자 예상값과 계산값이 다르다고 나오면, 정의와 예상값 중 어느 쪽이 틀렸는지 사용자에게 묻는다.
+`problems` 가 있으면 고치고 다시 검사한다. `samples` 의 `<지표> (draft): <값>` 줄(전체 기간 값)을 보여 준다. `pending` 에 나온 지표는 승인 전 연결을 기다리는 지표다. 문제가 아니며, 값은 `samples` 에 `(draft, 미리 보기)` 로 나온다. 어느 연결이 승인돼야 답변에 쓰이는지 알린다. `notes` 에 담당자 예상값과 계산값이 다르다고 나오면, 정의와 예상값 중 어느 쪽이 틀렸는지 사용자에게 묻는다. `notes` 에 이름·동의어 겹침이 나오고 그 겹침에 새 지표가 들어 있으면, 그 말을 어느 지표에 둘지 사용자에게 묻고 새 지표 쪽을 고친다. 이미 있는 지표끼리의 겹침은 알리기만 한다.
 
 ### 미리 보기로 결과를 보고 고친다
 

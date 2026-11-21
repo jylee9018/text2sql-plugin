@@ -62,7 +62,7 @@ def test_golden_engine(con, model):
 
 def test_other_dialect(model):
     sql = model.compile(["revenue", "order_count"], ["customers.customer_state"], dialect="postgres")
-    assert "FULL OUTER JOIN" in sql and "IS NOT DISTINCT FROM" in sql
+    assert "UNION" in sql and "IS NOT DISTINCT FROM" in sql  # 묶음 값을 모은 뒤 갈래마다 LEFT JOIN(3층 5.5절)
 
 
 APPROVED = [{"vendor_name": "TEXT2SQL", "data": '{"status": "approved"}'}]
@@ -78,15 +78,58 @@ def _code(model, *args, **kw):
     return e.value.code
 
 
+ORDER_LINES = """
+SELECT oi.order_id, oi.order_item_id, oi.product_id, oi.price, o.order_status
+FROM order_items AS oi LEFT JOIN orders AS o ON o.order_id = oi.order_id
+"""
+
+
+def _with_order_lines(source: str = ORDER_LINES) -> SemanticModel:
+    """주문 상품 줄에 주문 상태를 붙인 조회문 데이터셋을 더한 정의."""
+    doc = _doc()
+    doc["datasets"].append({
+        "name": "order_lines", "source": source, "primary_key": ["order_id", "order_item_id"],
+        "fields": [{"name": n, "expression": {"sql": n}} for n in ("order_id", "order_item_id", "product_id", "price", "order_status")],
+        "metrics": [{"name": "line_revenue", "custom_extensions": APPROVED,
+                     "expression": {"sql": "SUM(price) FILTER (WHERE order_status NOT IN ('canceled', 'unavailable'))"}}],
+    })
+    doc["relationships"].append({"name": "order_lines_to_products", "from": "order_lines", "to": "products",
+                                 "from_columns": ["product_id"], "to_columns": ["product_id"], "custom_extensions": APPROVED})
+    return SemanticModel(doc)
+
+
+def test_query_source(con, model):
+    """source 에 조회문을 두면 그 결과를 표처럼 쓴다. 모델 지표 revenue 를 데이터셋 지표로 옮겨도 값이 같다."""
+    from t2s.guard import policy
+
+    lines = _with_order_lines()
+    by = ["products.product_category_name"]
+    assert rows(con, lines, ["line_revenue"], by) == rows(con, model, ["revenue"], by)
+    assert lines.tables() == model.tables()  # 조회문은 테이블 목록에 들어가지 않는다
+    assert "order_lines" not in str(policy(None, lines)["columns"])  # LLM 이 쓰는 행 조회 SQL 에서는 이름으로 부를 수 없다
+    for bad in [
+        "SELECT card_no FROM payments_pii",  # 정의 밖 테이블
+        "SELECT * FROM order_items; DROP TABLE orders",  # 문 두 개
+        "SELECT * FROM (SELECT * FROM order_items) AS x",  # 하위 쿼리
+        "WITH x AS (SELECT * FROM order_items) SELECT * FROM x",
+        "SELECT order_id, ROW_NUMBER() OVER (ORDER BY price) AS n FROM order_items",  # 윈도우
+        "SELECT order_id, pg_sleep(1) AS z FROM order_items",  # 허용 목록 밖 함수
+        "SELECT * FROM read_csv('/etc/passwd')",
+    ]:
+        assert _code(_with_order_lines(bad), ["line_revenue"]) == "invalid_source", bad
+
+
 def test_injection_blocked(model):
     """where·정의 식으로 함수·하위 쿼리가 들어가 정의 밖 데이터를 읽던 경로."""
     for where in [
         "POSITION('x' IN query_to_xml('SELECT pw FROM secret', TRUE, FALSE, '')::TEXT) > 0",
         "pg_sleep(2) IS NOT NULL",
-        "LENGTH(customers.customer_state) > 1",
-        "1 = 1",  # 필드가 없는 조건
+        "orders.order_id IN (SELECT order_id FROM payments_pii)",
     ]:
         assert _code(model, ["revenue"], where=[where]) == "invalid_where", where
+    # 3층 규격은 조건에 1층 식을 받는다. 허용 목록 안의 함수와 필드 없는 조건(모든 갈래에 건다)은 받는다
+    assert model.compile(["revenue"], where=["LENGTH(customers.customer_state) > 1"])
+    assert model.compile(["revenue"], where=["1 = 1"])
     assert model.compile(["revenue"], where=["orders.order_status IN ('delivered') AND orders.order_purchase_timestamp >= '2018-01-01'"])
 
     doc = _doc()
@@ -94,6 +137,8 @@ def test_injection_blocked(model):
     customers["fields"][2]["expression"]["sql"] = "(SELECT card_no FROM payments_pii LIMIT 1)"
     assert _code(SemanticModel(doc), ["revenue"], ["customers.customer_state"]) == "invalid_field"
     customers["fields"][2]["expression"]["sql"] = "pg_sleep(1)"
+    assert _code(SemanticModel(doc), ["revenue"], ["customers.customer_state"]) == "invalid_field"
+    customers["fields"][2]["expression"]["sql"] = "SELECT card_no FROM payments_pii"  # 괄호 없는 SELECT 도 식으로 받지 않는다
     assert _code(SemanticModel(doc), ["revenue"], ["customers.customer_state"]) == "invalid_field"
 
     doc = _doc()
@@ -103,8 +148,10 @@ def test_injection_blocked(model):
     doc = _doc()
     doc["metrics"].append({"name": "raw_price", "expression": {"sql": "order_items.price"}, "custom_extensions": APPROVED})
     doc["metrics"].append({"name": "sneaky", "expression": {"sql": "MAX(query_to_xml('SELECT 1', TRUE, FALSE, ''))"}, "custom_extensions": APPROVED})
+    doc["metrics"].append({"name": "running", "expression": {"sql": "SUM(SUM(order_items.price)) OVER (ORDER BY orders.order_id)"}, "custom_extensions": APPROVED})
     assert _code(SemanticModel(doc), ["raw_price"]) == "invalid_metric"  # 집계 없는 지표
     assert _code(SemanticModel(doc), ["sneaky"]) == "invalid_metric"
+    assert _code(SemanticModel(doc), ["running"]) == "invalid_metric"  # 식 전체가 윈도우
 
 
 def test_guard_blocks_hidden_sql():
@@ -229,7 +276,7 @@ def test_draft_relationship_not_used(model):
     with pytest.raises(EngineError) as e:
         model.compile(["revenue"], ["sellers.seller_state"])
     assert e.value.code == "relationship_not_approved" and "order_items_to_sellers" in str(e.value)
-    assert "sellers" not in model.catalog().split("연결")[1]  # LLM 에게 주는 요약에도 draft 연결은 없다
+    assert "sellers" not in model.catalog().split("연결")[1].split("표 (")[0]  # LLM 에게 주는 요약의 연결 절에도 draft 연결은 없다
     doc = yaml.safe_load(MODEL.read_text(encoding="utf-8"))
     for r in doc["relationships"]:
         if r["name"] == "order_items_to_sellers":

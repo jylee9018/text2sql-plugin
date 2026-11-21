@@ -17,12 +17,14 @@ TIME_TYPES = {"Date", "Time", "DateTime", "DateTimeTz"}
 class EngineError(ValueError):
     """LLM이 읽고 요청을 고쳐 다시 시도할 수 있게 코드·후보·힌트를 담는다."""
 
-    def __init__(self, code: str, message: str, candidates: list[str] | None = None, hint: str = ""):
+    def __init__(self, code: str, message: str, candidates: list[str] | None = None, hint: str = "", ossie: str | None = None):
         super().__init__(message)
-        self.code, self.candidates, self.hint = code, candidates or [], hint
+        # ossie: 같은 실패의 Ossie 3층 오류 코드(E_NO_PATH 등). 규격에 해당 코드가 없는 t2s 고유 실패(승인 전 지표 등)는 None
+        self.code, self.candidates, self.hint, self.ossie = code, candidates or [], hint, ossie
 
     def to_dict(self) -> dict:
-        return {"code": self.code, "message": str(self), "candidates": self.candidates, "hint": self.hint}
+        out = {"code": self.code, "message": str(self), "candidates": self.candidates, "hint": self.hint}
+        return {**out, "ossie": self.ossie} if self.ossie else out
 
 
 def read_yaml(path: str | Path) -> dict:
@@ -42,11 +44,20 @@ def expr_sql(obj: dict) -> str:
     raise EngineError("unsupported_dialect", f"{obj['name']}: OSSIE_SQL_2026 이나 ANSI_SQL 식이 없음")
 
 
+EXTENSION_KEYS = ("nonportable_extensions", "custom_extensions")  # 0.3.0.dev0 이름, 0.2.0.dev0 이름
+
+
 def ext(obj: dict) -> dict:
-    """우리 확장 칸(vendor_name TEXT2SQL)의 값. 없으면 빈 dict."""
-    for x in obj.get("custom_extensions") or []:
-        if x["vendor_name"] == "TEXT2SQL":
-            return json.loads(x["data"])
+    """우리 확장 칸(vendor_name TEXT2SQL)의 값. 없으면 빈 dict.
+
+    0.3.0.dev0 은 nonportable_extensions 에 data 를 객체로 적는다. 0.2.0.dev0 의 custom_extensions
+    (data 는 JSON 문자열)도 읽는다. ponytail: 옛 형식 정의 파일이 남아 있는 동안만 두 이름을 읽는다. 다 옮기면 뒤 이름을 지운다.
+    """
+    for key in EXTENSION_KEYS:
+        for x in obj.get(key) or []:
+            if x["vendor_name"] == "TEXT2SQL":
+                data = x["data"]
+                return json.loads(data) if isinstance(data, str) else dict(data)
     return {}
 
 

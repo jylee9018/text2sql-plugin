@@ -1,8 +1,16 @@
 {
   "name": "text2sql",
-  "version": "0.3.2",
-  "description": "자연어 질문에 SQL로 답하는 Text-to-SQL 스킬과 읽기 전용 실행 도구",
+  "version": "0.4.0",
+  "description": "자연어 SQL 조회와 Graph 메타데이터 탐색을 제공하는 플러그인",
   "author": {
     "name": "sonjisu"
+  },
+  "userConfig": {
+    "graph_mcp_token": {
+      "type": "string",
+      "title": "Graph MCP token",
+      "description": "Railway text2sql-graph-mcp 서비스의 MCP_API_TOKEN",
+      "sensitive": true
+    }
   }
 }

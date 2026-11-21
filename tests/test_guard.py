@@ -17,7 +17,9 @@ def _columns(model):
 
 @pytest.mark.parametrize("gold", GOLD, ids=lambda g: str(g["id"]))
 def test_gold_sql_passes(model, gold):
-    prepare(gold["sql"], "sqlite", model.tables(), 100, allow_aggregates=True, columns=_columns(model), edges=model.edges)
+    # 지표 엔진이 만든 SQL 은 실제 호출에서도 컬럼·연결 검사를 다시 하지 않는다.
+    rules = {} if gold["path"] == "metric" else {"columns": _columns(model), "edges": model.edges}
+    prepare(gold["sql"], "sqlite", model.tables(), 100, allow_aggregates=True, **rules)
 
 
 def test_anonymous_aggregates_rejected(model):
@@ -38,6 +40,16 @@ def test_column_and_join_rejected(model):
     with pytest.raises(UnsafeSQL) as e:
         prepare("SELECT o.order_id FROM orders o JOIN products p ON o.order_id = p.product_id", "sqlite", model.tables(), 100, **kw)
     assert e.value.kind == "unknown_join" and "order_items.order_id = orders.order_id" in str(e.value)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT o.order_id FROM orders o JOIN customers c ON 1=1",
+    "SELECT o.order_id FROM orders o JOIN customers c ON o.customer_id = c.customer_id OR 1=1",
+])
+def test_join_requires_approved_key_condition(model, sql):
+    with pytest.raises(UnsafeSQL) as e:
+        prepare(sql, "sqlite", model.tables(), 100, columns=_columns(model), edges=model.edges)
+    assert e.value.kind == "unknown_join"
 
 
 def test_shape():
@@ -65,3 +77,24 @@ def test_lint(model):
     assert kinds("SELECT COUNT(DISTINCT o.order_id)" + join) == []
     assert kinds("SELECT SUM(i.price)" + join) == []  # 품목은 N 쪽이라 부풀지 않는다
     assert lint("SELEC nope", "sqlite") == []
+
+
+@pytest.mark.parametrize("sql, ok", [
+    ("WITH t AS (SELECT order_id, customer_id FROM orders) SELECT t.order_id, c.customer_state FROM t JOIN customers c ON t.customer_id = c.customer_id", True),
+    ("WITH t AS (SELECT customer_id AS cid FROM orders) SELECT c.customer_state FROM t JOIN customers c ON t.cid = c.customer_id", True),
+    ("WITH t AS (SELECT order_id FROM orders) SELECT p.product_category_name FROM t JOIN products p ON t.order_id = p.product_id", False),
+    ("WITH a AS (SELECT order_id FROM orders), b AS (SELECT order_id AS k FROM a) SELECT p.product_id FROM b JOIN products p ON b.k = p.product_id", False),
+    ("SELECT p.product_id FROM (SELECT order_id FROM orders) s JOIN products p ON s.order_id = p.product_id", False),
+    ("WITH t AS (SELECT order_id || 'x' AS k FROM orders) SELECT p.product_id FROM t JOIN products p ON t.k = p.product_id", False),
+    # 첫 연결이 틀리고 둘째가 맞아도 거절한다(JOIN 마다 따로 본다)
+    ("SELECT o.order_id FROM orders o JOIN products p ON o.order_id = p.product_id JOIN customers c ON o.customer_id = c.customer_id", False),
+])
+def test_join_through_cte_or_subquery(model, sql, ok):
+    """WITH·하위 쿼리 결과를 이을 때도 원래 테이블 컬럼으로 거슬러 승인된 연결인지 본다. 원래 컬럼을 못 찾는 키(계산한 값)는 거절한다."""
+    kw = dict(columns=_columns(model), edges=model.edges)
+    if ok:
+        prepare(sql, "sqlite", model.tables(), 100, **kw)
+        return
+    with pytest.raises(UnsafeSQL) as e:
+        prepare(sql, "sqlite", model.tables(), 100, **kw)
+    assert e.value.kind == "unknown_join"

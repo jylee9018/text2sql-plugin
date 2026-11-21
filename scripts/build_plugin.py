@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "dist" / "text2sql.plugin"
 FILES = [
     ROOT / ".claude-plugin" / "plugin.json",
+    ROOT / ".mcp.json",
     ROOT / "LICENSE",
     ROOT / "pyproject.toml",
     ROOT / "scripts" / "t2s",

@@ -1,5 +1,6 @@
 """정의 검사(t2s check 의 findings): 정적 규칙과 실제 DB 대조. LLM 없이 임시 SQLite 로 본다."""
 import copy
+import json
 
 import pytest
 import yaml
@@ -57,7 +58,14 @@ def test_draft_metric_and_bad_link(doc, db):
     (lambda d: d["relationships"].append({"name": "items_to_customers", "from": "order_items", "to": "customers",
                                           "from_columns": ["order_id"], "to_columns": ["customer_id"]}), "모호함"),
     (lambda d: set_ext(_metric(d, "revenue"), decision="nope"), "decisions 에 없는 결정 nope"),
-], ids=["missing_field", "duplicate_name", "prefixed_metric", "bad_datatype", "ambiguous_path", "unknown_decision"])
+    # 확장 칸 값의 모양. 오타 난 status 는 오류 없이 승인 전으로 읽혀 지표가 답변에서 빠진다
+    (lambda d: set_ext(_metric(d, "revenue"), status="aproved"), "draft 나 approved 가 아님"),
+    (lambda d: set_ext(d["relationships"][0], status="approve"), "draft 나 approved 가 아님"),
+    (lambda d: set_ext(_metric(d, "revenue"), expected={"value": "12%"}), "expected.value 는 숫자"),
+    (lambda d: set_ext(_metric(d, "revenue"), discovery=["단위는 주문"]), "discovery 는 q·a"),
+    (lambda d: set_ext(d, revision="6"), "revision 은 정수"),
+], ids=["missing_field", "duplicate_name", "prefixed_metric", "bad_datatype", "ambiguous_path", "unknown_decision",
+        "bad_status", "bad_edge_status", "text_expected", "bad_discovery", "text_revision"])
 def test_static_rules(doc, change, expected):
     change(doc)
     r = findings(doc)
@@ -72,6 +80,58 @@ def test_expected_values(doc, db):
     jan = ["orders.order_purchase_timestamp >= '2018-01-01'", "orders.order_purchase_timestamp < '2018-02-01'"]
     set_ext(_metric(doc, "revenue"), expected={"value": 180, "where": jan})
     assert findings(doc, db)["notes"] == []
+    set_ext(_metric(doc, "revenue"), expected={"value": "12%"})  # 글자 값은 예외 없이 문제로 보고하고 대조는 건너뛴다
+    r = findings(doc, db)
+    assert not r["ok"] and r["notes"] == [] and any("expected.value 는 숫자" in p for p in r["problems"])
+
+
+def test_label_overlap_is_a_note(doc, db):
+    """같은 말이 두 지표에 붙으면 그 말로 물을 때 어느 지표인지 갈리지 않는다. 막지는 않고 알린다."""
+    _metric(doc, "freight")["ai_context"]["synonyms"].append("매출")
+    note = "이름·동의어 겹침 '매출': revenue, freight. 그 말로 물으면 어느 지표인지 정해지지 않는다. 한쪽에서 빼거나 말을 나눈다"
+    assert findings(doc) == {"ok": True, "problems": [], "notes": [note], "samples": [], "pending": []}
+    assert findings(doc, db)["notes"] == [note]
+
+
+ORDER_LINES = ("SELECT oi.order_id, oi.order_item_id, oi.price, o.order_status "
+               "FROM order_items AS oi LEFT JOIN orders AS o ON o.order_id = oi.order_id")
+
+
+def _with_lines(doc, source=ORDER_LINES):
+    """주문 상품 줄에 주문 상태를 붙인 계산용 데이터셋을 더한다."""
+    doc["datasets"].append({"name": "order_lines", "source": source, "primary_key": ["order_id", "order_item_id"],
+                            "fields": [{"name": n, "expression": {"sql": n}} for n in ("order_id", "order_item_id", "price", "order_status")]})
+    return doc
+
+
+@pytest.mark.parametrize("source, expected", [
+    (ORDER_LINES.replace("LEFT JOIN", "JOIN"), "기준 표의 행을 바꿈(JOIN orders"),  # 주문 없는 상품 줄이 빠진다
+    (ORDER_LINES + " WHERE o.order_status = 'delivered'", "기준 표의 행을 바꿈(WHERE)"),  # 조건은 지표 FILTER 로
+    ("SELECT name AS order_id FROM sqlite_master", "정의 밖 테이블"),  # DB 없이도 잡는다
+], ids=["inner_join", "where", "outside_table"])
+def test_query_dataset_static(doc, source, expected):
+    r = findings(_with_lines(doc, source))
+    assert not r["ok"] and any(expected in p for p in r["problems"]), r["problems"]
+
+
+def test_query_dataset_rows(doc, db):
+    """LEFT JOIN 이어도 붙인 표가 N:1 이 아니면 행이 불어난다. 기본키를 넓게 잡으면 기본키 중복 검사로는 못 잡는다."""
+    assert findings(_with_lines(copy.deepcopy(doc)), db)["ok"]
+    fan = ("SELECT o.order_id, oi.order_item_id, oi.price, o.order_status "
+           "FROM orders AS o LEFT JOIN order_items AS oi ON oi.order_id = o.order_id")  # 주문 o1 의 상품이 둘이라 5행
+    r = findings(_with_lines(doc, fan), db)
+    assert r["problems"] == ["order_lines: 행 5개가 기준 표 orders 의 4개와 다름. LEFT JOIN 으로 붙인 표가 N:1 이 아니다"]
+
+
+def test_nonportable_extensions_read_like_custom_extensions(doc, db):
+    """Ossie 0.3.0.dev0 형식(nonportable_extensions, data 는 객체)도 0.2.0.dev0 형식과 같은 값으로 읽는다."""
+    old = findings(copy.deepcopy(doc), db)
+    objs = [doc, *doc["relationships"], *doc.get("metrics", []), *(m for d in doc["datasets"] for m in d.get("metrics", []))]
+    for obj in objs:
+        if "custom_extensions" in obj:
+            obj["nonportable_extensions"] = [{**x, "data": json.loads(x["data"])} for x in obj.pop("custom_extensions")]
+    assert not any("custom_extensions" in o for o in objs)
+    assert findings(doc, db) == old
 
 
 def test_broken_extension_is_reported(doc, db):
