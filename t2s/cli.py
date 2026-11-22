@@ -37,7 +37,8 @@ from .ossie import READ, expr_sql, ext, is_time, read_yaml
 _RETRYABLE = {"syntax", "unknown_table", "unknown_column", "unknown_join", "missing_object", "type_mismatch"}
 # ponytail: 메시지 정규식 분류. 문법 오류와 방언 오류는 구분하지 못한다
 _DB_ERRORS = [
-    ("missing_object", re.compile(r"no such table|no such column|does not exist", re.I)),
+    ("missing_object", re.compile(r"no such table|no such column|no such function|does not exist", re.I)),
+    ("unknown_column", re.compile(r"ambiguous column name|column(?: reference)? .+? is ambiguous", re.I)),
     ("syntax", re.compile(r"syntax error", re.I)),
     ("timeout", re.compile(r"interrupted|statement timeout|canceling statement", re.I)),
     ("type_mismatch", re.compile(r"datatype mismatch|operator does not exist|invalid input syntax|cannot be cast", re.I)),

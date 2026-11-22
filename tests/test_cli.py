@@ -235,6 +235,15 @@ def test_sql_missing_column_suggests_joined_dataset_alias(env, capsys):
     assert "t.product_category_name_english" in out["error"]["hint"]
 
 
+@pytest.mark.parametrize("sql, kind", [
+    ("SELECT order_id FROM orders o JOIN order_items i ON o.order_id = i.order_id", "unknown_column"),
+    ("SELECT unsupported_sql_function(order_id) FROM orders", "missing_object"),
+])
+def test_sql_reports_repairable_db_query_errors(env, capsys, sql, kind):
+    error = t2s(capsys, "sql", sql, code=1)["error"]
+    assert error["kind"] == kind and error["retryable"]
+
+
 def test_context_uses_graph_version(env, capsys):
     env.setenv("SEMANTIC_MODEL", "nope.yaml")
     out = t2s(capsys, "context")
