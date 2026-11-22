@@ -49,6 +49,15 @@ claude plugin eval .     # evals/ 시나리오로 에이전트 동작 평가
 claude plugin validate . # 매니페스트와 폴더 구조 검사
 ```
 
+`case.yaml`과 `setup.sh`가 있는 시나리오(예: `evals/ambiguous-metric-asks-rules/`)는 실제 DB와 `t2s`를 쓰므로 아래처럼 실행합니다. `setup.sh`가 에이전트 작업 폴더에 `data/olist.db`와 시험용 정의 파일 사본을 두고 `t2s` 환경을 만듭니다(uv가 관리하는 파이썬이 필요합니다. 없으면 `uv python install 3.12`).
+
+```bash
+claude plugin eval . --case ambiguous-metric-asks-rules --scaffold --allow-tools Bash Edit Write --runs 1
+```
+
+- 한 번 실행에 약 $0.3가 듭니다. 기본 반복 횟수는 시나리오의 `runs`(3회)이고, 형식을 확인할 때는 `--runs 1`로 줄입니다.
+- 결과는 `evals/results/`에 남습니다(git에서 제외). 에이전트가 실제로 무엇을 했는지 보려면 `--keep-temp`를 붙이고 남은 폴더의 `out/trace.jsonl`을 봅니다.
+
 ## 배포
 
 1. 버전을 세 곳에서 함께 올립니다: `.claude-plugin/plugin.json`, `plugin.json`(Codex용), `pyproject.toml`
