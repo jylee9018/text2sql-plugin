@@ -2,6 +2,17 @@
 
 Claude Code와 Codex에서 자연어로 데이터베이스를 조회하는 플러그인입니다. 에이전트가 질문을 해석하고 내장된 `t2s`가 SQL을 만들거나 검사한 뒤 읽기 전용으로 실행합니다. 지표와 연결 규칙은 원격 Graph MCP의 활성 모델에서 읽습니다. 로컬 정의 파일은 조회에 사용하지 않습니다.
 
+## 한눈에 보기
+
+| 목적 | 이 문서에서 볼 곳 |
+| --- | --- |
+| 처음 설치하기 | [준비와 설치](#준비와-설치) → [Graph MCP 연결](#graph-mcp-연결) |
+| 질문으로 실제 값을 조회하기 | [데이터베이스 연결](#데이터베이스-연결) → [질문과 스킬](#질문과-스킬) |
+| 명령줄에서 SQL을 만들거나 검사하기 | [`t2s` 명령](#t2s-명령) → [실행 보호와 점검](#실행-보호와-점검) |
+| 정의를 새로 작성·검사하기 | [시맨틱 정의 저장소](https://github.com/zisu17/semantic-definitions#readme)와 `define-metric`·`semantic-sync` 스킬 |
+
+일반 조회는 Graph MCP만 시맨틱 정의의 출처로 사용합니다. `define-metric`, `semantic-sync`, `t2s check`가 다루는 Ossie 파일은 **정의 작성·게시 전 검사**를 위한 소스입니다. 실제 지표 값은 Graph MCP가 아니라 원본 DB에서 읽습니다.
+
 ## 준비와 설치
 
 - Claude Code 또는 Codex
@@ -108,6 +119,15 @@ python3 scripts/build_plugin.py
 ```
 
 두 번째 명령은 Claude 업로드용 `dist/text2sql.plugin`을 만듭니다. 빌드 스크립트는 개발용 파일과 링크를 제외합니다. Ossie 공식 적합성 사례는 외부 저장소와 DuckDB를 준비한 뒤 `OSSIE_DIR=/path/to/ossie uv run --with duckdb pytest tests/test_ossie_compliance.py`로 실행합니다.
+
+## 관련 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [실패 유형](references/failure-types.md) | `diagnose`가 사용하는 실패 분류와 수정 방향 |
+| [스킬별 사용법](skills/ask/SKILL.md) | 자연어 조회부터 시작하는 스킬 지침. 다른 스킬은 [skills/](skills/)에서 찾습니다 |
+| [MCP 조회 계약](https://github.com/zisu17/text2sql-mcp/blob/main/docs/graphdb-mcp-design.md) | 활성 모델 스냅샷과 계보 조회 도구 |
+| [시맨틱 모델 작성 규칙](https://github.com/zisu17/semantic-definitions/blob/main/docs/semantic-model.md) | Ossie 정의의 정본·승인 상태·검증 |
 
 ## 라이선스
 
