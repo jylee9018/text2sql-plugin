@@ -209,6 +209,8 @@ def test_sql(env, capsys):
     assert out["result"]["rows"] == [["RJ", 1], ["SP", 2]] and out["notes"] == []
     out = t2s(capsys, "sql", "SELECT SUM(i.price) AS s FROM order_items AS i")
     assert out["undefined"] == ["SUM(i.price)"] and "정의 안 된 계산" in out["notes"][0]
+    out = t2s(capsys, "sql", "SELECT COUNT(*) FROM orders WHERE order_purchase_timestamp <= '2018-01-20'")
+    assert [warning["kind"] for warning in out["warnings"]] == ["date_literal"]
     assert t2s(capsys, "sql", "SELECT AGG(o.avg_delivery_days) FROM orders AS o", code=1)["error"]["code"] == "metric_not_approved"
 
 
@@ -224,6 +226,15 @@ def test_sql_rejects_physical_table_and_reports_execution_error(env, capsys):
     assert out["ok"] is False and out["error"]["kind"] == "missing_object"
 
 
+def test_sql_missing_column_suggests_joined_dataset_alias(env, capsys):
+    sql = ("SELECT p.product_category_name_english FROM products AS p "
+           "JOIN product_category_name_translation AS t "
+           "ON t.product_category_name = p.product_category_name")
+    out = t2s(capsys, "sql", sql, code=1)
+    assert out["error"]["kind"] == "missing_object"
+    assert "t.product_category_name_english" in out["error"]["hint"]
+
+
 def test_context_uses_graph_version(env, capsys):
     env.setenv("SEMANTIC_MODEL", "nope.yaml")
     out = t2s(capsys, "context")
@@ -231,3 +242,24 @@ def test_context_uses_graph_version(env, capsys):
     assert out["definition"]["source"] == "graph_mcp"
     env.setenv("GRAPH_VERSION_ID", "other-version")
     assert t2s(capsys, "context", code=1)["error"]["kind"] == "graph_unavailable"
+
+
+def test_one_graph_snapshot_per_command(env, capsys):
+    """검증과 실행이 같은 활성 정의를 쓰고 명령당 Graph 왕복은 한 번만 한다."""
+    calls = []
+
+    def snapshot(model=None):
+        calls.append(model)
+        return {"version_id": "published-v1", "definition": yaml.safe_load(MODEL.read_text(encoding="utf-8"))}
+
+    env.setattr(cli, "fetch_model", snapshot)
+    commands = [
+        ("validate", "SELECT order_id FROM orders"),
+        ("run", "SELECT order_id FROM orders LIMIT 1"),
+        ("values", "orders.order_status"),
+        ("sql", "SELECT COUNT(*) FROM orders"),
+        ("compile", "order_count", "--run"),
+    ]
+    for i, command in enumerate(commands, 1):
+        t2s(capsys, *command)
+        assert len(calls) == i, command

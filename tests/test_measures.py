@@ -37,6 +37,24 @@ def test_agg_rejected(model, sql, code):
     assert e.value.code == code
 
 
+@pytest.mark.parametrize("recursive", ["", "RECURSIVE "])
+def test_recursive_cte_is_not_a_dataset(con, model, recursive):
+    """SQLite 자기 참조 CTE는 RECURSIVE 키워드가 없어도 유효하다."""
+    sql = (f"WITH {recursive}months AS ("
+           "SELECT 1 AS n UNION ALL SELECT n + 1 FROM months WHERE n < 3) "
+           "SELECT n FROM months ORDER BY n")
+    out = rewrite(sql, model, read="sqlite", dialect="sqlite")
+    assert con.execute(out["sql"]).fetchall() == [(1,), (2,), (3,)]
+
+
+def test_inner_cte_name_does_not_hide_outer_dataset(con, model):
+    sql = ("WITH wrapper AS (WITH orders AS (SELECT 1 AS order_id) SELECT order_id FROM orders) "
+           "SELECT o.order_id FROM orders AS o ORDER BY o.order_id LIMIT 1")
+    out = rewrite(sql, model, read="sqlite", dialect="sqlite")
+    assert "FROM orders AS orders" in out["sql"]  # 바깥 orders 는 여전히 승인된 필드 표로 확장한다
+    assert con.execute(out["sql"]).fetchall() == [("o1",)]
+
+
 ITEMS = "FROM order_items AS i JOIN orders AS o ON i.order_id = o.order_id JOIN products AS p ON i.product_id = p.product_id"
 
 

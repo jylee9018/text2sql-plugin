@@ -32,7 +32,7 @@ codex plugin add text2sql@text2sql-plugin
 Codex에서는 첫 사용 전에 일반 터미널에서 `t2s`를 설치합니다. 플러그인을 업데이트한 뒤에도 다시 실행합니다.
 
 ```bash
-sh ~/.codex/plugins/cache/text2sql-plugin/text2sql/0.5.0/scripts/t2s setup
+sh ~/.codex/plugins/cache/text2sql-plugin/text2sql/0.5.1/scripts/t2s setup
 ```
 
 설치 위치가 다르면 해당 플러그인 폴더의 `scripts/t2s` 경로를 사용합니다. 스킬은 `t2s`가 PATH에 없을 때 이 스크립트를 `sh`로 실행합니다.

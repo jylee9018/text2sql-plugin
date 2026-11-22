@@ -48,6 +48,13 @@ def _relations(tree: exp.Expression, model: SemanticModel) -> None:
         for alias, src in list(scope.sources.items()):
             if not isinstance(src, exp.Table):
                 continue
+            # sqlglot 은 WITH RECURSIVE 가 없어도 SQLite 에서 허용되는 자기 참조 CTE를
+            # Table 로 남긴다. 자기 CTE 본문 안에서만 그 이름을 건너뛴다.
+            parent = src.parent
+            while parent and not (isinstance(parent, exp.CTE) and parent.alias_or_name.lower() == src.name.lower()):
+                parent = parent.parent
+            if not src.db and not src.catalog and parent:
+                continue
             d = names.get(src.name.lower()) if not src.catalog and (not src.db or src.db.lower() == model.name.lower()) else None
             if d is None:
                 raise EngineError("unknown_relation", f"FROM 에는 정의된 데이터셋만 쓴다: {src.sql()}", sorted(model.datasets))

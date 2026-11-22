@@ -112,11 +112,11 @@ def _sql_arg(sql: str) -> str:
     return sys.stdin.read() if sql == "-" else sql
 
 
-def _check(db: Database, sql: str, read: str | None, engine_sql: bool = False,
-           model: SemanticModel | None = None) -> tuple[str | None, UnsafeSQL | None]:
+def _check(db: Database, sql: str, read: str | None, model: SemanticModel | None,
+           engine_sql: bool = False) -> tuple[str | None, UnsafeSQL | None]:
     """가드 검사. (통과한 SQL, None) 또는 (None, 거절)."""
     try:
-        rules = policy(db, model if model is not None else _model(), engine_sql)
+        rules = policy(db, model, engine_sql)
         return prepare(sql, db.dialect, max_rows=db.max_rows, schema=db.schema, read=read, **rules), None
     except UnsafeSQL as e:
         return None, e
@@ -160,8 +160,29 @@ def _db_error(e: SQLAlchemyError) -> dict:
     message = str(e.__cause__ or e)[:1000]
     kind = next((k for k, pattern in _DB_ERRORS if pattern.search(message)), "db")
     if kind == "timeout":
-        message += " — 조건이나 LIMIT 을 더해 범위를 줄여라"
+        message += " — 질문의 범위를 유지하고 상관 하위 쿼리·중복 전체 스캔·조인 실행 계획을 줄여 다시 작성한다. 집계 뒤 LIMIT 은 계산량을 줄이지 않는다"
     return {"kind": kind, "message": message, "retryable": kind in _RETRYABLE}
+
+
+def _column_hint(sql: str, model: SemanticModel, message: str, read: str) -> str | None:
+    """없는 컬럼이 이미 조인한 다른 데이터셋 필드라면 그 별칭을 알려 준다."""
+    missing = re.search(r"no such column:\s*([\w.]+)", message, re.I)
+    if not missing:
+        return None
+    field = missing[1].rsplit(".", 1)[-1].lower()
+    try:
+        tree = sqlglot.parse_one(sql, read=read)
+    except SqlglotError:
+        return None
+    datasets = {name.lower(): name for name in model.datasets}
+    candidates = []
+    for table in tree.find_all(exp.Table):
+        dataset = datasets.get(table.name.lower())
+        definition = model.fields.get((dataset, field)) if dataset else None
+        if definition and not (definition.get("sensitivity") or ext(definition).get("sensitivity")):
+            candidates.append(f"{table.alias_or_name}.{field}")
+    candidates = list(dict.fromkeys(candidates))
+    return f"{field} 컬럼은 이미 사용한 {candidates[0]} 에 있다. 컬럼 별칭을 확인한다" if len(candidates) == 1 else None
 
 
 def _count(n: float) -> str:
@@ -259,7 +280,7 @@ def _values(db: Database, model: SemanticModel | None, ref: str, like: str | Non
         if like is not None:
             q = q.where(exp.Like(this=exp.Lower(this=e.copy()), expression=exp.Lower(this=exp.Literal.string(f"%{like}%"))))
     q = q.from_(source, dialect=BUILD)
-    safe, err = _check(db, q.sql(BUILD), BUILD, engine_sql=True)  # 엔진 SQL 과 같은 정책: 허용 테이블, 행 수 제한
+    safe, err = _check(db, q.sql(BUILD), BUILD, engine_sql=True, model=model)  # 같은 Graph 정의로 검증한다
     if err:
         _fail({"error": _guard_error(err)})
     try:
@@ -401,7 +422,7 @@ def _main(argv: list[str]) -> None:
         _emit({"describe": db.describe(a.tables, only=only)} if a.tables else {"tables": db.table_list(only=only)})
     elif a.cmd == "validate":
         sql = _sql_arg(a.sql)
-        safe, err = _check(db, sql, a.read)
+        safe, err = _check(db, sql, a.read, model=model)
         problems = [{"kind": err.kind, "message": str(err)}] if err else []
         slow = [{k: v for k, v in _slow(parts).items() if k != "retryable"}] if safe and (parts := db.slow_parts(safe)) else []
         _emit({"ok": err is None, "sql": safe, "problems": problems, **shape(sql, db.dialect, a.read),
@@ -410,7 +431,7 @@ def _main(argv: list[str]) -> None:
         sql = _log["sql"] = _sql_arg(a.sql)
         _log["executed"] = True  # 가드 거절도 실행 시도로 센다
         warnings = _lint(db, model, sql, a.read)
-        safe, err = _check(db, sql, a.read)
+        safe, err = _check(db, sql, a.read, model=model)
         if err:
             _fail({"ok": False, "error": _guard_error(err), "warnings": warnings})
         result = _execute(db, safe, a.force)
@@ -426,19 +447,25 @@ def _sql(db: Database, model: SemanticModel | None, a: argparse.Namespace) -> No
     if not model:
         _fail({"error": {"kind": "graph_unavailable", "message": "Graph MCP에서 활성 정의를 읽지 못했다"}})
     _log["executed"] = True
+    sql = _sql_arg(a.sql)
+    warnings = _lint(db, model, sql, a.read)
     try:
-        out = rewrite(_sql_arg(a.sql), model, read=a.read or db.dialect, dialect=db.dialect, allow_draft=a.allow_draft)
+        out = rewrite(sql, model, read=a.read or db.dialect, dialect=db.dialect, allow_draft=a.allow_draft)
     except EngineError as e:
-        _fail({"ok": False, "error": e.to_dict()})
+        _fail({"ok": False, "error": e.to_dict(), "warnings": warnings})
     notes = [f"정의 안 된 계산: {', '.join(out['undefined'])}. 정의된 지표가 아니라 SQL 의 집계를 그대로 계산했다. 답에 그렇게 밝힌다"] if out["undefined"] else []
     _log["sql"] = out["sql"]
-    safe, err = _check(db, out["sql"], None, engine_sql=True)  # 바꾼 SQL: 정의의 테이블·조회 전용·행 수 제한만 본다
+    safe, err = _check(db, out["sql"], None, engine_sql=True, model=model)  # 확장에 쓴 Graph 버전으로 검증한다
     if err:
-        _fail({**out, "ok": False, "notes": notes, "error": _guard_error(err)})
+        _fail({**out, "ok": False, "notes": notes, "warnings": warnings, "error": _guard_error(err)})
     result = _execute(db, safe, a.force)
     if not result["ok"]:
-        _fail({**out, **result, "notes": notes})
-    _emit({**out, "notes": notes, "result": result})
+        if result["error"]["kind"] == "missing_object":
+            hint = _column_hint(sql, model, result["error"]["message"], a.read or db.dialect)
+            if hint:
+                result["error"]["hint"] = hint
+        _fail({**out, **result, "notes": notes, "warnings": warnings})
+    _emit({**out, "notes": notes, "warnings": warnings, "result": result})
 
 
 if __name__ == "__main__":
