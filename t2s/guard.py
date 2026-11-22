@@ -196,13 +196,13 @@ def _check_statement_policy(tree: exp.Query, allow_aggregates: bool) -> None:
     if tree.find(*_FORBIDDEN):
         raise UnsafeSQL("데이터 변경 구문이 포함됨")
     if not allow_aggregates and tree.find(exp.AggFunc):
-        raise UnsafeSQL("행 조회만 허용. 집계는 지표 정의(t2s compile)로 하고, 맞는 지표가 없으면 지표가 없다고 답한다")
+        raise UnsafeSQL("행 조회만 허용. 승인 지표는 t2s compile로 계산하고, 정의에 없는 집계는 t2s sql로 계산한다")
     for f in tree.find_all(exp.Func):
         name = (f.name if isinstance(f, exp.Anonymous) else f.sql_name()).lower()
         if name.startswith(_DENIED_FUNCS):
             raise UnsafeSQL(f"쓸 수 없는 함수: {name}")
         if not allow_aggregates and isinstance(f, exp.Anonymous) and name.startswith(_ANON_AGGS):
-            raise UnsafeSQL(f"행 조회만 허용. {name} 은 집계 함수다")
+            raise UnsafeSQL(f"행 조회만 허용. {name}은 집계 함수다. 집계는 t2s compile 또는 t2s sql을 쓴다")
     if any(isinstance(t.this, exp.Func) for t in tree.find_all(exp.Table)):
         raise UnsafeSQL("FROM 절의 테이블 함수는 허용하지 않음")
 

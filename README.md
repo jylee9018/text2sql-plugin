@@ -69,7 +69,7 @@ uv pip install --python '/path/from/setup/bin/python' 'psycopg[binary]'
 
 ## 질문과 스킬
 
-Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$ask 월별 매출 보여줘`처럼 요청합니다. `ask`는 먼저 Graph MCP에서 게시된 지표와 승인 상태를 찾습니다. 요청한 지표가 승인 전이고 기준이 다른 승인 지표가 있다면 차이를 설명하고 어느 기준으로 진행할지 묻습니다. 사용자가 선택하기 전에는 대체 지표로 계산하지 않습니다. 승인된 지표의 실제 값을 계산할 때 `t2s`는 Graph MCP의 활성 모델만 사용합니다. 원본 DB의 읽기 전용 접속은 별도로 필요합니다.
+Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$ask 월별 매출 보여줘`처럼 요청합니다. `ask`는 먼저 Graph MCP에서 게시된 지표와 승인 상태를 찾습니다. 같은 뜻의 지표가 없고 질문에서 계산 기준을 정할 수 있으면 등록 지표가 없다는 사실과 계산 기준을 먼저 알립니다. 이어서 `t2s sql`로 계산하고 결과와 기준을 보여 줍니다. 같은 뜻의 지표가 승인 전이면 사용 가능한 기준을 설명하고 선택을 확인합니다. 계산에는 Graph MCP의 활성 모델과 원본 DB의 읽기 전용 접속이 필요합니다.
 
 | 스킬 | 역할 |
 |---|---|
@@ -90,7 +90,7 @@ Claude Code에서는 `/text2sql:ask 월별 매출 보여줘`, Codex에서는 `$a
 |---|---|
 | `context`, `schema`, `values` | 정의·스키마·실제 필드 값을 탐색합니다 |
 | `compile` | Ossie 3층 지표 질의를 SQL로 만듭니다. `--run`을 붙이면 실행합니다 |
-| `sql` | Ossie 2층 SQL의 `AGG(별칭.지표)`를 계산해 실행합니다 |
+| `sql` | Ossie 2층 SQL에서 승인 지표 `AGG(별칭.지표)`와 SQL 집계를 실행합니다 |
 | `validate`, `run` | SQL을 검사하거나 검사 후 읽기 전용으로 실행합니다 |
 | `check` | 정의를 정적으로 검사하거나 DB와 대조합니다 |
 
