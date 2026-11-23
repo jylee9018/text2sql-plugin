@@ -99,7 +99,7 @@ nonportable_extensions:
 - 정의 파일을 고칠 때마다(저장할 때마다) 모델의 `revision` 을 1 올린다. 규격 판 올리기처럼 지표 뜻이 그대로인 고침도 센다.
 - 3단계에서 고른 개념 연결은 정의 파일 옆 매핑 파일(`<주제>.mapping.yaml`)의 `concept_mappings` 에 적는다. 그 개념의 `object_mappings` 의 `referent_mappings`, 또는 `link_mappings` 의 `children` 에 `relationship` 과 `expression: <dataset.field>` 를 더한다. "새 개념"이면 온톨로지 파일(`<주제>.ontology.yaml`)에 `concept`·`description`·`type`·`relationships` 를 먼저 더한다. 계산용 데이터셋의 사본 필드는 잇지 않는다.
 - 새 지표는 `status: draft` 로만 만든다. 이미 있는 지표·연결의 `status` 는 고치지 않는다. 승인은 사람이 한다.
-- 카드번호, 계좌번호, 주민번호, 연락처 같은 민감 컬럼은 필드로 넣지 않는다.
+- 카드번호, 계좌번호, 주민번호, 연락처 같은 민감 컬럼은 필드로 넣지 않는다. 보유 여부(예: `phone_number IS NOT NULL`)처럼 원래 컬럼을 식 안에서 읽는 파생 필드도 넣지 않는다(`t2s check` 가 문제로 낸다). 그런 지표가 꼭 필요하면 데이터 담당자에게 민감하지 않은 컬럼이나 뷰(예: 보유 여부만 담은 컬럼)를 DB 에 만들어 달라고 요청하도록 안내한다.
 
 `t2s check` 는 정의 파일이 git 저장소에 있으면 마지막 커밋과 견줘, 새 지표에 `decision` 이 없거나, 이번에 승인된 항목에 `approval` 기록이 없으면 문제로 낸다. 내용을 고쳤는데 `revision` 이 그대로면 `notes` 로 알린다. 파일을 고치면 훅이 `t2s check --static` 결과를 알려 줄 수 있다(Claude Code, 또는 이 플러그인의 훅을 신뢰한 Codex). 훅 결과가 보이지 않으면 고친 뒤 `t2s check <정의 파일> --static` 을 직접 부른다. 문제가 나오면 고친다.
 
