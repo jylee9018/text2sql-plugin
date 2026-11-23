@@ -49,13 +49,20 @@ claude plugin eval .     # evals/ 시나리오로 에이전트 동작 평가
 claude plugin validate . # 매니페스트와 폴더 구조 검사
 ```
 
-`case.yaml`과 `setup.sh`가 있는 시나리오(예: `evals/ambiguous-metric-asks-rules/`)는 실제 DB와 `t2s`를 쓰므로 아래처럼 실행합니다. `setup.sh`가 에이전트 작업 폴더에 `data/olist.db`와 시험용 정의 파일 사본을 두고 `t2s` 환경을 만듭니다(uv가 관리하는 파이썬이 필요합니다. 없으면 `uv python install 3.12`).
+`case.yaml`과 `setup.sh`가 있는 시나리오(예: `evals/ambiguous-metric-asks-rules/`)는 실제 DB와 `t2s`를 쓰므로 아래처럼 실행합니다. 시나리오의 `setup.sh`는 공통 준비 스크립트 `evals/_scaffold/olist.sh`를 부릅니다. 이 스크립트가 에이전트 작업 폴더에 `data/olist.db`와 시험용 정의 파일(`tests/fixtures/olist/sales.ossie.yaml`) 사본을 두고 `t2s` 환경을 만듭니다(uv가 관리하는 파이썬이 필요합니다. 없으면 `uv python install 3.12`). 시나리오에 맞게 정의 파일이나 DB를 바꿔야 하면 그 시나리오의 `setup.sh`에서 공통 스크립트를 부른 뒤 고칩니다.
+
+eval은 시나리오 폴더 밖의 파일을 `scaffold_script`로 지정할 수 없습니다. 그래서 `case.yaml`에는 시나리오 폴더 안의 `setup.sh`를 적고, `setup.sh`가 공통 스크립트를 부릅니다.
 
 ```bash
+# 시나리오 하나
 claude plugin eval . --case ambiguous-metric-asks-rules --scaffold --allow-tools Bash Edit Write --runs 1
+# 전체
+claude plugin eval . --scaffold --allow-tools Bash Edit Write
 ```
 
-- 한 번 실행에 약 $0.3가 듭니다. 기본 반복 횟수는 시나리오의 `runs`(3회)이고, 형식을 확인할 때는 `--runs 1`로 줄입니다.
+- 한 번 실행에 $0.1~0.3가 듭니다. 기본 반복 횟수는 시나리오의 `runs`(3회)이고, 형식을 확인할 때는 `--runs 1`로 줄입니다.
+- 기본으로 플러그인을 켠 실행과 끈 실행을 함께 돌려 점수 차이를 보여 줍니다. 플러그인을 켠 실행만 보려면 `--ablation none`을 붙입니다.
+- 결과를 읽을 때 `turns: 0`이거나 `error`가 있으면 에이전트가 아니라 시험 설정 문제입니다.
 - 결과는 `evals/results/`에 남습니다(git에서 제외). 에이전트가 실제로 무엇을 했는지 보려면 `--keep-temp`를 붙이고 남은 폴더의 `out/trace.jsonl`을 봅니다.
 
 ## 배포

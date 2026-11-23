@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: no-decision-asks-why-first
+context:
+  # 작업 폴더에 DB·정의 파일 사본을 두고 t2s 환경을 미리 만든다. --scaffold 로 실행해야 돈다.
+  scaffold_script: setup.sh
