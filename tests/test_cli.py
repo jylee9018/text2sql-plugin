@@ -41,6 +41,43 @@ def test_draft_preview_and_local_definition_ignored(env, capsys):
     assert t2s(capsys, "context")["definition"]["version_id"] == "published-v1"
 
 
+def test_local_definition_option(env, capsys, tmp_path):
+    """--definition 이 있으면 Graph 없이 로컬 정의 파일로 계산하고, 출력에 출처를 밝힌다."""
+    def no_graph(model=None):
+        raise AssertionError("--definition 이 있으면 Graph를 읽지 않는다")
+    env.setattr(cli, "fetch_model", no_graph)
+    local = str(MODEL)
+    ctx = t2s(capsys, "context", "--definition", local)
+    assert ctx["definition"]["source"] == "local" and ctx["definition"]["path"] == local
+    assert ctx["definition"]["version_id"] is None and ctx["catalog"].startswith("정의 olist_sales")
+    want = {"kind": "local", "path": local}
+    assert t2s(capsys, "schema", "orders", "--definition", local)["source"] == want
+    assert t2s(capsys, "values", "orders.order_status", "--definition", local)["source"] == want
+    # 승인 전 지표는 로컬 정의에서도 미리 보기로만 계산된다
+    assert t2s(capsys, "compile", "avg_delivery_days", "--run", "--definition", local, code=1)["error"]["code"] == "metric_not_approved"
+    out = t2s(capsys, "compile", "avg_delivery_days", "--allow-draft", "--run", "--definition", local)
+    assert out["source"] == want and out["preview"] is True and out["result"]["rows"] == [[7.5]]
+    assert t2s(capsys, "sql", "SELECT AGG(o.order_count) AS n FROM orders AS o", "--definition", local)["source"] == want
+
+
+def test_local_definition_only_in_working_copy(env, capsys, tmp_path):
+    """로컬 파일에만 있는 새 지표는 --definition 으로만 보이고, 기본(Graph)에는 없다."""
+    doc = yaml.safe_load(MODEL.read_text(encoding="utf-8"))
+    orders = next(d for d in doc["datasets"] if d["name"] == "orders")
+    orders["metrics"].append({"name": "delivered_count", "expression": {"sql": "COUNT(order_id) FILTER (WHERE order_status = 'delivered')"},
+                              "custom_extensions": [{"vendor_name": "TEXT2SQL", "data": '{"status": "draft"}'}]})
+    local = tmp_path / "working.ossie.yaml"
+    local.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+    out = t2s(capsys, "compile", "delivered_count", "--allow-draft", "--run", "--definition", str(local))
+    assert out["source"]["kind"] == "local" and out["result"]["rows"][0][0] > 0
+    assert t2s(capsys, "compile", "delivered_count", "--allow-draft", "--run", code=1)["error"]["code"] != "metric_not_approved"
+    assert t2s(capsys, "context")["definition"]["source"] == "graph_mcp"
+
+
+def test_local_definition_bad_path(env, capsys):
+    assert t2s(capsys, "context", "--definition", "nope.ossie.yaml", code=1)["error"]["kind"] == "bad_definition"
+
+
 def test_setup_errors(env, capsys):
     """주소·드라이버·인자 오류도 traceback 없이 JSON 오류 하나다."""
     env.setenv("DATABASE_URL", "foo://x/y")
@@ -124,6 +161,7 @@ def test_values(env, capsys, tmp_path):
         assert t2s(capsys, "values", "customers.customer_state", "--like", text)["values"] == []
     out = t2s(capsys, "values", "orders.order_purchase_timestamp")
     assert out == {"ref": "orders.order_purchase_timestamp", "table": "orders", "column": "order_purchase_timestamp", "kind": "time",
+                   "source": {"kind": "graph", "version_id": "published-v1"},
                    "min": "2018-01-05 10:00:00", "max": "2018-02-10 10:00:00", "non_null": 4, "rows": 4}
     err = t2s(capsys, "values", "customers.nope", code=1)["error"]
     assert err["kind"] == "unknown_column" and err["retryable"]

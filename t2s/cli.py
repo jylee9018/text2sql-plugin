@@ -96,7 +96,17 @@ def _load(path: str) -> SemanticModel:
         _fail({"error": {"kind": "bad_definition", "message": f"정의 파일을 읽을 수 없음: {path} ({type(e).__name__}: {str(e)[:200]})"}})
 
 
-def _model() -> SemanticModel | None:
+def _model(path: str | None = None) -> SemanticModel | None:
+    """정의를 읽는다. path(--definition)가 있으면 그 로컬 파일, 없으면 Graph MCP의 활성 모델.
+
+    로컬 파일은 지표를 정의하는 동안(define-metric) 미리 보기용이다. 질문 답변(ask)은 Graph만 쓴다.
+    """
+    if path:
+        model = _load(path)
+        model.graph_version_id = None
+        model.definition_source = "local"
+        model.definition_path = path
+        return model
     try:
         snapshot = fetch_model(os.getenv("GRAPH_MODEL") or None)
         expected_version = os.getenv("GRAPH_VERSION_ID")
@@ -104,9 +114,20 @@ def _model() -> SemanticModel | None:
             raise GraphClientError("Graph MCP 활성 모델 버전이 질문 시작 후 바뀌었다. 지표를 다시 확인한다")
         model = SemanticModel(snapshot["definition"])
         model.graph_version_id = snapshot["version_id"]
+        model.definition_source = "graph"
+        model.definition_path = None
         return model
     except (GraphClientError, KeyError, ValueError) as error:
         _fail({"error": {"kind": "graph_unavailable", "message": str(error)}})
+
+
+def _source(model: SemanticModel | None) -> dict:
+    """어느 정의로 계산했는지. local 이면 게시 전 정의라 질문 답변에 쓰지 않는다."""
+    if model is None:
+        return {}
+    if model.definition_source == "local":
+        return {"source": {"kind": "local", "path": model.definition_path}}
+    return {"source": {"kind": "graph", "version_id": model.graph_version_id}}
 
 
 def _sql_arg(sql: str) -> str:
@@ -224,13 +245,13 @@ def _compile(a: argparse.Namespace) -> None:
     if a.run:
         db = _database()
         a.dialect = db.dialect
-    model = _model()
+    model = _model(a.definition)
     times = {f"{d}.{n}".lower() for (d, n), f in model.fields.items() if is_time(f) and f.get("datatype") != "Date"}
     warnings = [w for cond in a.where for w in lint(cond, READ, time_columns=times)]
     if a.allow_draft:  # 승인 전에 결과를 보고 고치려는 미리 보기다. 질문 답변(ask)에서는 쓰지 않는다
         warnings.append({"kind": "preview", "message": "승인 전 지표·연결로 계산한 미리 보기다. 질문에 답할 때는 쓰지 않는다"})
     try:
-        out = {**engine.build(model, a), "warnings": warnings, **({"preview": True} if a.allow_draft else {})}
+        out = {**engine.build(model, a), **_source(model), "warnings": warnings, **({"preview": True} if a.allow_draft else {})}
     except EngineError as e:
         _fail({"error": e.to_dict(), "warnings": warnings})
     _log["sql"] = out.get("sql")
@@ -288,7 +309,7 @@ def _values(db: Database, model: SemanticModel | None, ref: str, like: str | Non
         result = db.execute(safe)
     except SQLAlchemyError as x:
         _fail({"error": _db_error(x)})
-    head = {"ref": ref, "table": table, "column": column}
+    head = {"ref": ref, "table": table, "column": column, **_source(model)}
     if timed:
         lo, hi, nn, rows = result["rows"][0]
         return _emit({**head, "kind": "time", "min": lo, "max": hi, "non_null": nn, "rows": rows})
@@ -330,8 +351,9 @@ def _context(db: Database, model: SemanticModel | None) -> dict:
     # ponytail: 정의 요약이 1만 토큰 이하면 통째로 넘긴다. 넘으면 질문으로 검색하는 구현으로 바꾼다
     return {
         "dialect": db.dialect, "schema": db.schema, "max_rows": db.max_rows, "readonly_guarantee": db.readonly_guarantee,
-        "definition": {"name": model.name, "revision": model.revision,
-                       "version_id": model.graph_version_id, "source": "graph_mcp"} if model else None,
+        "definition": {"name": model.name, "revision": model.revision, "version_id": model.graph_version_id,
+                       "source": "graph_mcp" if model.definition_source == "graph" else "local",
+                       **({"path": model.definition_path} if model.definition_path else {})} if model else None,
         "catalog": model.catalog() if model else None,
         "tables": sorted(policy(db, model)["allowed_tables"]),
     }
@@ -369,6 +391,9 @@ def _parser() -> argparse.ArgumentParser:
     v.add_argument("ref", help="정의가 있으면 dataset.field, 없으면 table.column")
     v.add_argument("--like", help="대소문자 무시 부분 일치")
     v.add_argument("--limit", type=int, default=20, help="값 개수(최대 100)")
+    definition_help = "게시 전 로컬 정의 파일. 지표를 정의하는 동안의 미리 보기용이고 질문 답변에는 쓰지 않는다. 없으면 Graph MCP의 활성 모델"
+    for name in ("context", "schema", "values", "compile", "sql"):
+        sub.choices[name].add_argument("--definition", metavar="PATH", help=definition_help)
     c = sub.add_parser("check", help="정의 검사(문제가 있어도 exit 0)")
     c.add_argument("path", nargs="?", help="게시 전 검사할 정의 소스 파일")
     c.add_argument("--static", action="store_true", help="DB 없이 정의만 본다")
@@ -415,12 +440,12 @@ def _main(argv: list[str]) -> None:
         return _compile(a)
     if a.cmd == "check":
         return _check_definition(a.path, a.static)
-    db, model = _database(), _model()
+    db, model = _database(), _model(getattr(a, "definition", None))
     if a.cmd == "context":
         _emit(_context(db, model))
     elif a.cmd == "schema":
         only = table_names(policy(db, model)["allowed_tables"])
-        _emit({"describe": db.describe(a.tables, only=only)} if a.tables else {"tables": db.table_list(only=only)})
+        _emit({**({"describe": db.describe(a.tables, only=only)} if a.tables else {"tables": db.table_list(only=only)}), **_source(model)})
     elif a.cmd == "validate":
         sql = _sql_arg(a.sql)
         safe, err = _check(db, sql, a.read, model=model)
@@ -466,7 +491,7 @@ def _sql(db: Database, model: SemanticModel | None, a: argparse.Namespace) -> No
             if hint:
                 result["error"]["hint"] = hint
         _fail({**out, **result, "notes": notes, "warnings": warnings})
-    _emit({**out, "notes": notes, "warnings": warnings, "result": result})
+    _emit({**out, **_source(model), "notes": notes, "warnings": warnings, "result": result})
 
 
 if __name__ == "__main__":
