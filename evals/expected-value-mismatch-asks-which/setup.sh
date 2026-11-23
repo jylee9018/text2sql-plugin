@@ -22,3 +22,4 @@ block = """      - name: late_delivery_rate
 s = s.replace(anchor, "\n" + block + anchor.lstrip("\n"), 1) if False else s.replace(anchor, "\n" + block.rstrip("\n") + anchor, 1)
 open(p, "w", encoding="utf-8").write(s)
 PY
+sh "$(dirname "$0")/../_scaffold/commit-definition.sh"

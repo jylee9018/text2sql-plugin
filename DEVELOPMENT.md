@@ -49,7 +49,7 @@ claude plugin eval .     # evals/ 시나리오로 에이전트 동작 평가
 claude plugin validate . # 매니페스트와 폴더 구조 검사
 ```
 
-`case.yaml`과 `setup.sh`가 있는 시나리오(예: `evals/ambiguous-metric-asks-rules/`)는 실제 DB와 `t2s`를 쓰므로 아래처럼 실행합니다. 시나리오의 `setup.sh`는 공통 준비 스크립트 `evals/_scaffold/olist.sh`를 부릅니다. 이 스크립트가 에이전트 작업 폴더에 `data/olist.db`와 시험용 정의 파일(`tests/fixtures/olist/sales.ossie.yaml`) 사본을 두고 `t2s` 환경을 만듭니다(uv가 관리하는 파이썬이 필요합니다. 없으면 `uv python install 3.12`). 시나리오에 맞게 정의 파일이나 DB를 바꿔야 하면 그 시나리오의 `setup.sh`에서 공통 스크립트를 부른 뒤 고칩니다.
+`case.yaml`과 `setup.sh`가 있는 시나리오(예: `evals/ambiguous-metric-asks-rules/`)는 실제 DB와 `t2s`를 쓰므로 아래처럼 실행합니다. 시나리오의 `setup.sh`는 공통 준비 스크립트 `evals/_scaffold/olist.sh`를 부릅니다. 이 스크립트가 에이전트 작업 폴더에 `data/olist.db`와 시험용 정의 파일(`tests/fixtures/olist/sales.ossie.yaml`) 사본을 두고 `t2s` 환경을 만듭니다(uv가 관리하는 파이썬이 필요합니다. 없으면 `uv python install 3.12`). 시나리오에 맞게 정의 파일이나 DB를 바꿔야 하면 그 시나리오의 `setup.sh`에서 공통 스크립트를 부른 뒤 고칩니다. `setup.sh`의 마지막에는 `evals/_scaffold/commit-definition.sh`를 불러 정의 파일을 git에 한 번 커밋합니다. `t2s check`가 이 판과 견줘 이번에 바뀐 것(승인 기록, 새 지표의 결정, revision)을 보기 때문입니다.
 
 eval은 시나리오 폴더 밖의 파일을 `scaffold_script`로 지정할 수 없습니다. 그래서 `case.yaml`에는 시나리오 폴더 안의 `setup.sh`를 적고, `setup.sh`가 공통 스크립트를 부릅니다.
 

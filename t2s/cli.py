@@ -16,10 +16,12 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
 import sqlglot
+import yaml
 from sqlalchemy.exc import ArgumentError, NoSuchModuleError, SQLAlchemyError
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -27,7 +29,7 @@ from sqlglot.errors import SqlglotError
 from . import engine
 from .graph_client import GraphClientError, fetch_model
 from .db import Database, type_family
-from .definition import findings, uncovered
+from .definition import changes, findings, uncovered
 from .engine import BUILD, EngineError, SemanticModel, source_table
 from .measures import rewrite
 from .guard import UnsafeSQL, lint, policy, prepare, shape, table_names
@@ -318,6 +320,32 @@ def _values(db: Database, model: SemanticModel | None, ref: str, like: str | Non
     _emit({**head, "kind": "categorical", "values": values, "truncated": len(rows) > limit or result["truncated"]})
 
 
+# macOS 의 /usr/bin/git 은 Xcode 도구를 찾아 실행하는 중간 프로그램이라, 임시 폴더 쓰기가 막힌 환경(샌드박스)에서 실패한다.
+# 진짜 git 이 있으면 그것을 먼저 쓴다.
+_GIT_CANDIDATES = ("/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+                   "/opt/homebrew/bin/git", "/usr/local/bin/git")
+
+
+def _git() -> str:
+    return next((g for g in _GIT_CANDIDATES if os.access(g, os.X_OK)), "git")
+
+
+def _committed(path: str) -> dict | None:
+    """정의 파일의 git 마지막 커밋(HEAD) 판. git 저장소가 아니거나 커밋된 적 없거나 git 을 쓸 수 없으면 None."""
+    folder, name = os.path.split(os.path.abspath(path))
+    try:
+        out = subprocess.run([_git(), "-C", folder, "show", f"HEAD:./{name}"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        doc = yaml.safe_load(out.stdout)
+    except Exception:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def _check_definition(path: str | None, static: bool) -> None:
     """정의를 검사한다. 문제가 있어도 exit 0(validate 와 같다). 파일을 못 읽을 때만 bad_definition."""
     if not path:
@@ -332,6 +360,11 @@ def _check_definition(path: str | None, static: bool) -> None:
     if db:
         db.tables  # 접속 실패를 항목마다 문제로 늘어놓지 않고 오류 하나로 낸다
     r = findings(doc, db)
+    before = _committed(path)
+    diff = changes(doc, before)
+    r["problems"] += diff["problems"]
+    r["notes"] += diff["notes"]
+    r["ok"] = not r["problems"]
     try:
         model = SemanticModel(doc)
     except Exception:  # 형식 오류는 findings 가 문제로 보고했다
@@ -344,6 +377,7 @@ def _check_definition(path: str | None, static: bool) -> None:
             pass
     _emit({"ok": r["ok"], "mode": "static" if static else "db",
            "definition": {"name": doc.get("name"), "revision": model.revision if model else None, "path": path},
+           "compared_with": "git HEAD" if before is not None else None,
            "problems": r["problems"], "notes": r["notes"], "pending": r.get("pending") or [], "samples": r["samples"] or [], "uncovered": gaps})
 
 

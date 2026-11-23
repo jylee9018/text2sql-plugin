@@ -310,3 +310,28 @@ def test_one_graph_snapshot_per_command(env, capsys):
     for i, command in enumerate(commands, 1):
         t2s(capsys, *command)
         assert len(calls) == i, command
+
+
+def test_check_compares_with_git_head(env, capsys, tmp_path):
+    """정의 파일이 git 에 있으면 마지막 커밋과 견줘, 이번에 승인된 지표의 승인 기록을 묻는다."""
+    import subprocess
+    repo = tmp_path / "defs"
+    repo.mkdir()
+    path = repo / "sales.ossie.yaml"
+    path.write_text(MODEL.read_text(encoding="utf-8"), encoding="utf-8")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    assert t2s(capsys, "check", str(path), "--static")["compared_with"] == "git HEAD"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    avg = next(m for d in doc["datasets"] if d["name"] == "orders" for m in d["metrics"] if m["name"] == "avg_delivery_days")
+    set_ext(avg, status="approved")
+    set_ext(doc, revision=3)
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+    out = t2s(capsys, "check", str(path), "--static")
+    assert not out["ok"] and any("승인 기록 없이" in p for p in out["problems"])
+    # git 밖의 파일은 비교하지 않는다
+    loose = tmp_path / "loose.ossie.yaml"
+    loose.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    assert t2s(capsys, "check", str(loose), "--static")["compared_with"] is None

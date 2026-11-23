@@ -7,7 +7,7 @@ import yaml
 
 from tests.conftest import CUSTOMER_COUNT, MODEL, make_db, set_ext
 from t2s.db import Database
-from t2s.definition import findings
+from t2s.definition import changes, findings
 
 BASE = yaml.safe_load(MODEL.read_text(encoding="utf-8"))
 
@@ -139,3 +139,65 @@ def test_broken_extension_is_reported(doc, db):
     _metric(doc, "revenue")["custom_extensions"][0]["data"] = "{status: approved}"
     r = findings(doc, db)
     assert not r["ok"] and r["problems"]
+
+
+@pytest.mark.parametrize("name, expression", [
+    ("customer_phone", "customer_phone"), ("email", "email"), ("card_no", "card_no"),
+    ("contact", "연락처"), ("account_number", "account_number"),
+])
+def test_sensitive_field_is_a_problem(doc, name, expression):
+    """연락처·계좌번호 같은 민감 컬럼은 이름이나 식에 보이면 문제다."""
+    _dataset(doc, "customers")["fields"].append({"name": name, "expression": {"sql": expression}, "datatype": "String"})
+    assert any(f"customers.{name}: 민감 정보" in p for p in findings(doc)["problems"])
+
+
+def test_approval_shape(doc):
+    m = _metric(doc, "revenue")
+    set_ext(m, approval={"by": "운영팀장", "at": "2026-11-24"})
+    assert findings(doc)["ok"]
+    set_ext(m, approval={"by": "운영팀장"})
+    assert any("approval 은 by" in p for p in findings(doc)["problems"])
+
+
+def test_changes_need_nothing_without_previous_version(doc):
+    assert changes(doc, None) == {"problems": [], "notes": []}
+
+
+def test_changes_newly_approved_needs_record(doc):
+    """이번에 approved 가 된 지표만 승인 기록을 묻는다. 예전부터 승인된 지표에는 묻지 않는다."""
+    before = copy.deepcopy(doc)
+    avg = next(m for m in _dataset(doc, "orders")["metrics"] if m["name"] == "avg_delivery_days")
+    set_ext(avg, status="approved")
+    set_ext(doc, revision=3)
+    r = changes(doc, before)
+    assert len(r["problems"]) == 1 and "orders.avg_delivery_days: 승인 기록 없이" in r["problems"][0]
+    set_ext(avg, approval={"by": "물류팀장", "at": "2026-11-24"})
+    assert changes(doc, before) == {"problems": [], "notes": []}
+
+
+def test_changes_newly_approved_relationship_needs_record(doc):
+    before = copy.deepcopy(doc)
+    rel = next(r for r in doc["relationships"] if r["name"] == "order_payments_to_orders")
+    set_ext(rel, status="approved")
+    set_ext(doc, revision=3)
+    assert any("order_payments_to_orders: 승인 기록 없이" in p for p in changes(doc, before)["problems"])
+
+
+def test_changes_new_metric_needs_decision(doc):
+    before = copy.deepcopy(doc)
+    metric = {"name": "delivered_count", "expression": {"sql": "COUNT(order_id) FILTER (WHERE order_status = 'delivered')"},
+              "custom_extensions": [{"vendor_name": "TEXT2SQL", "data": json.dumps({"status": "draft"})}]}
+    _dataset(doc, "orders")["metrics"].append(metric)
+    set_ext(doc, revision=3)
+    assert any("orders.delivered_count: 새 지표에 decision 이 없다" in p for p in changes(doc, before)["problems"])
+    set_ext(metric, decision="category_quality_improvement")
+    assert changes(doc, before) == {"problems": [], "notes": []}
+
+
+def test_changes_revision_must_increase(doc):
+    before = copy.deepcopy(doc)
+    _metric(doc, "revenue")["description"] = "바뀐 설명"
+    assert any("revision 이 그대로" in n for n in changes(doc, before)["notes"])
+    set_ext(doc, revision=3)
+    assert changes(doc, before)["notes"] == []
+    assert changes(copy.deepcopy(before), before)["notes"] == []  # 바뀐 것이 없으면 묻지 않는다

@@ -10,3 +10,4 @@ SELECT customer_id,
        printf('user%d@example.com', rowid)
 FROM customers LIMIT 2000;
 SQL
+sh "$(dirname "$0")/../_scaffold/commit-definition.sh"

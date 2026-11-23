@@ -10,3 +10,4 @@ assert old in s, "fixture changed"
 s = s.replace(old, "instructions: 기간은 주문일 기준. 물류팀장이 월별 배송 소요일을 보고 택배사 계약 갱신 여부를 정한다")
 open(p, "w", encoding="utf-8").write(s)
 PY
+sh "$(dirname "$0")/../_scaffold/commit-definition.sh"
