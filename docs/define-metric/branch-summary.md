@@ -164,7 +164,7 @@ gitGraph
     commit id: "210364c 작업 3: --definition"
     commit id: "3677998 작업 4: check 규칙"
     commit id: "472b11b 민감 컬럼 파생 필드"
-    commit id: "9b4c9ab 작업 5: 설명서 정리"
+    commit id: "d442873 작업 5: 설명서 정리"
 ```
 
 | 커밋 | 날짜 | 작업 | 주요 파일 |
@@ -176,7 +176,7 @@ gitGraph
 | `210364c` | 11-24 | 3 | `t2s/cli.py`, `tests/test_cli.py`, `SKILL.md` |
 | `3677998` | 11-24 | 4 | `t2s/definition.py`, `t2s/cli.py`, `tests/`, `evals/_scaffold/` |
 | `472b11b` | 11-24 | 4 보완 | `SKILL.md`, 민감 컬럼 시험 채점 |
-| `9b4c9ab` | 11-24 | 5 | `SKILL.md`, `references/definition-format.md`, `docs/define-metric/` |
+| `d442873` | 11-24 | 5 | `SKILL.md`, `references/definition-format.md`, `docs/define-metric/` |
 
 변경 규모: 파일 103개, 1,634줄 추가, 22줄 삭제. 대부분은 시험 시나리오와 문서다. 코드·설명서·테스트는 6개 파일, 339줄 추가다.
 
