@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: 'DATEDIFF\([^)]*order_estimated_delivery_date[^)]*order_delivered_customer_date|DATEDIFF\([^)]*order_delivered_customer_date[^)]*order_estimated_delivery_date|order_delivered_customer_date\s*>=?\s*order_estimated_delivery_date|order_estimated_delivery_date\s*<=?\s*order_delivered_customer_date'
+pattern: 'DATEDIFF\([^)]*order_estimated_delivery_date[^)]*order_delivered_customer_date|DATEDIFF\([^)]*order_delivered_customer_date[^)]*order_estimated_delivery_date|order_delivered_customer_date[^\n<>]{0,40}>=?[^\n]{0,40}order_estimated_delivery_date|order_estimated_delivery_date[^\n<>]{0,40}<=?[^\n]{0,40}order_delivered_customer_date'
 match: contains
 target:
   source: file
