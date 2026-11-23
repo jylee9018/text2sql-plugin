@@ -2,7 +2,7 @@
 
 - 기준: `main` 커밋 `e250ebb`
 - 범위: 작업 커밋 8개와 문서 정리 커밋, 2026-11-21 ~ 2026-11-24
-- 관련 문서: [고도화 계획안](improvement-plan.md)
+- 관련 문서: [작업 정리 (글)](work-summary.md), [고도화 계획안](improvement-plan.md)
 
 ## 한눈에 보기
 
